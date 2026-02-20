@@ -305,10 +305,17 @@ def estimate_delivery_duration(total_quantity, speed_multiplier, clients_count=1
     Returns:
         Tuple of (hours, minutes) for estimated duration
     """
-    base_delay = calculate_delay_for_speed(speed_multiplier)
+    base_delay = 1.0
+    if speed_multiplier == 0.5:  # Slow
+        base_delay = 26.0
+    elif speed_multiplier == 1.0:  # Normal
+        base_delay = 19.5
+    elif speed_multiplier == 1.5:  # Fast
+        base_delay = 12.5
+    elif speed_multiplier == 2.0:  # Ultra Fast
+        base_delay = 9.5
     
     # Calculate total time in seconds
-    # If multiple clients, they work in parallel
     total_time_seconds = (total_quantity / max(clients_count, 1)) * base_delay
     
     # Convert to hours and minutes
@@ -316,6 +323,19 @@ def estimate_delivery_duration(total_quantity, speed_multiplier, clients_count=1
     minutes = int((total_time_seconds % 3600) // 60)
     
     return hours, minutes
+
+def get_delay_text(total_quantity, speed_multiplier, clients_count=1):
+    """Get formatted delay and delivery estimation text"""
+    hours, minutes = estimate_delivery_duration(total_quantity, speed_multiplier, clients_count)
+    
+    base_delay = "25-27s" if speed_multiplier == 0.5 else ("19-20s" if speed_multiplier == 1.0 else ("12-13s" if speed_multiplier == 1.5 else "9-10s"))
+    
+    time_str = ""
+    if hours > 0:
+        time_str += f"{hours}h "
+    time_str += f"{minutes}m"
+    
+    return f"Delay: {base_delay} (Delivers {total_quantity} Views in {time_str})"
 
 def get_speed_name(speed_multiplier):
     """Get friendly name and emoji for speed multiplier"""
@@ -2024,16 +2044,45 @@ async def change_order_speed(callback: types.CallbackQuery):
     )
 
     # Add pause/resume button
-    if is_paused:
-        builder.row(InlineKeyboardButton(text="▶️ Resume", callback_data=f"resume:{order_id}"))
-    else:
-        builder.row(InlineKeyboardButton(text="⏸ Pause", callback_data=f"pause:{order_id}"))
+    mute_status = "🔕 Unmute" if order.get("is_muted", False) else "🔔 Mute"
+    builder.row(
+        InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"{'resume' if is_paused else 'pause'}:{order_id}"),
+        InlineKeyboardButton(text=mute_status, callback_data=f"toggle_mute:{order_id}"),
+        width=2
+    )
+    
+    # Add Change Speed button
+    builder.row(InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order_id}"))
 
     # Add cancel order button
     builder.row(InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order_id}"))
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await callback.answer(f"✅ Speed changed to {speed_name} (FREE)", show_alert=True)
+
+@dp.callback_query(F.data.startswith("show_speed_options:"))
+async def show_speed_options(callback: types.CallbackQuery):
+    order_id = callback.data.split(":")[1]
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🐌 Slow (7-8 hrs)", callback_data=f"change_speed:{order_id}:slow"),
+        InlineKeyboardButton(text="🐢 Normal (5-6 hrs)", callback_data=f"change_speed:{order_id}:normal"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text="🚀 Fast (3-4 hrs)", callback_data=f"change_speed:{order_id}:fast"),
+        InlineKeyboardButton(text="⚡ Ultra Fast (2-3 hrs)", callback_data=f"change_speed:{order_id}:ultra"),
+        width=2
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
+    
+    await callback.message.edit_reply_markup(reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("back_to_order:"))
+async def back_to_order(callback: types.CallbackQuery):
+    order_id = callback.data.split(":")[1]
+    await send_updated_order_message(callback, order_id, "Back")
 
 @dp.callback_query(F.data.startswith("pause:"))
 async def pause_campaign(callback: types.CallbackQuery):
@@ -2084,6 +2133,16 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
     else:
         status_text = "▶️ <i>Your campaign is currently active.</i>"
 
+    speed_multiplier = order.get("speed_multiplier", 1.0)
+    speed_name, speed_emoji = get_speed_name(speed_multiplier)
+    
+    is_muted = order.get("is_muted", False)
+    mute_text = "🔕 ON" if is_muted else "🔔 OFF"
+    
+    # Calculate delivery estimation
+    clients_count = len(active_clients) or 1
+    delay_info = get_delay_text(per_post, speed_multiplier, clients_count)
+
     text = (
         f"📢 <b>Channel:</b> <i>{channel_title}</i> <code>(ID: {channel_id})</code>\n\n"
         f"🎯 <b>Service:</b> <code>{service_label}</code>\n"
@@ -2091,6 +2150,9 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
         f"📊 <b>Per Post:</b> <code>{per_post}</code>\n"
         f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
         f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
+        f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code>\n"
+        f"🔔 <b>Mute/Unmute:</b> <code>{mute_text}</code>\n"
+        f"⏳ <b>{delay_info}</b>\n"
         f"💰 <b>Price:</b> <code>${charge:.3f}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🟡 <b>Remaining Today:</b> <code>{posts_left_today} Post(s)</code>\n"
@@ -2103,14 +2165,39 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
     if order["status"] != "completed":
         button_text = "▶️ Resume" if is_paused else "⏸ Pause"
         button_action = "resume" if is_paused else "pause"
-        markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=button_text, callback_data=f"{button_action}:{order_id}")
-        ]])
+        mute_status = "🔕 Unmute" if order.get("is_muted", False) else "🔔 Mute"
+        
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(text=button_text, callback_data=f"{button_action}:{order_id}"),
+            InlineKeyboardButton(text=mute_status, callback_data=f"toggle_mute:{order_id}"),
+            width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order_id}"),
+            InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order_id}"),
+            width=2
+        )
+        markup = builder.as_markup()
     else:
         markup = None
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
     await callback.answer(alert_text)
+
+@dp.callback_query(F.data.startswith("toggle_mute:"))
+async def toggle_mute_campaign(callback: types.CallbackQuery):
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_mute = order.get("is_muted", False)
+    new_mute = not current_mute
+    await orders_collection.update_one({"_id": ObjectId(order_id)}, {"$set": {"is_muted": new_mute}})
+    
+    alert_text = "🔕 Unmuted." if current_mute else "🔔 Muted."
+    await send_updated_order_message(callback, order_id, alert_text)
 
 @dp.callback_query(F.data.startswith("cancel_order:"))
 async def cancel_order_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -2237,6 +2324,15 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
             status_text = "▶️ <i>Your campaign is currently active.</i>"
 
         # Compose message
+        speed_multiplier = order.get("speed_multiplier", 1.0)
+        speed_name, speed_emoji = get_speed_name(speed_multiplier)
+        is_muted = order.get("is_muted", False)
+        mute_text = "🔕 ON" if is_muted else "🔔 OFF"
+        
+        # Calculate delivery estimation
+        clients_count = len(active_clients) or 1
+        delay_info = get_delay_text(order.get('views_per_post', order.get('reactions_per_post', 0)), speed_multiplier, clients_count)
+
         text = (
             f"📢 <b>Channel:</b> <i>{channel_title}</i> <code>(ID: {channel_id})</code>\n\n"
             f"🎯 <b>Service:</b> <code>{order.get('service_identifier', 'Unknown')}</code>\n"
@@ -2244,6 +2340,9 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
             f"📊 <b>Per Post:</b> <code>{order.get('views_per_post', order.get('reactions_per_post', 0))}</code>\n"
             f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
             f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
+            f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code>\n"
+            f"🔔 <b>Mute/Unmute:</b> <code>{mute_text}</code>\n"
+            f"⏳ <b>{delay_info}</b>\n"
             f"💰 <b>Price:</b> <code>${charge:.3f}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"🟡 <b>Remaining Today:</b> <code>{remaining_today_posts} Post(s)</code>\n"
@@ -2253,16 +2352,19 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
         )
 
         # Buttons
-        buttons = []
-        if not is_paused:
-            buttons.append(InlineKeyboardButton(text="⏸ Pause", callback_data=f"pause:{order['_id']}"))
-        else:
-            buttons.append(InlineKeyboardButton(text="▶️ Resume", callback_data=f"resume:{order['_id']}"))
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"{'resume' if is_paused else 'pause'}:{order['_id']}"),
+            InlineKeyboardButton(text="🔕 Unmute" if is_muted else "🔔 Mute", callback_data=f"toggle_mute:{order['_id']}"),
+            width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order['_id']}"),
+            InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}"),
+            width=2
+        )
 
-        # Add cancel order button
-        buttons.append(InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}"))
-
-        markup = InlineKeyboardMarkup(inline_keyboard=[buttons])
+        markup = builder.as_markup()
 
         await message.answer(text, parse_mode="HTML", reply_markup=markup)
     await message.answer('Main Menu', reply_markup=get_main_menu_keyboard())
