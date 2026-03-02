@@ -1408,8 +1408,11 @@ async def active_orders_handler(message: types.Message):
         elif order["service_identifier"] == "reactions_by_followers":
             service_label = "Auto Follower Reactions"
             per_post = order.get("reactions_per_post", 0)
-        else:
+        elif order["service_identifier"] == "poll_votes":
             service_label = "Poll Votes"
+            per_post = order.get("quantity", 0)
+        else:
+            service_label = "Manual Service"
             per_post = order.get("quantity", 0)
 
         # Calculate delay with custom adjustment
@@ -1431,6 +1434,13 @@ async def active_orders_handler(message: types.Message):
 
         night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>" if night_mode else ""
 
+        if order["service_identifier"] == "views_by_followers":
+            metric_label = "Views per Post"
+        elif order["service_identifier"] == "reactions_by_followers":
+            metric_label = "Reactions per Post"
+        else:
+            metric_label = "Quantity"
+
         text = (
             f"📺 <b>Your Channels:</b>\n\n"
             f"<b>Channel Status :</b> 🟢 ON\n\n"
@@ -1438,15 +1448,17 @@ async def active_orders_handler(message: types.Message):
             f"🆔 <b>Channel ID:</b> {channel_id}\n"
             f"📛 <b>Channel Name:</b> {channel_title}\n"
             f"🔗 <b>Channel Username:</b> @{channel_title}\n"
-            f"👀 <b>Views per Post:</b> {per_post}\n"
-            f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
-            f"🔀 <b>Random Views:</b> {random_views}\n"
+            f"👀 <b>{metric_label}:</b> {per_post}\n"
+            f"📝 <b>Posts per Day:</b> {order.get('posts_per_day', 0)}\n"
+            f"🔀 <b>Random Views:</b> {order.get('random_views', 0)}\n"
             f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
             f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
             f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
             f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
             f"🌙 <b>Night Mode:</b> {night_str}"
-            f"{night_note}"
+            f"{night_note}\n\n"
+            f"🗳️ <b>Auto Poll Votes:</b> {'✅ ON' if order.get('auto_poll_enabled') else '❌ OFF'}\n"
+            f"🔢 <b>Auto Poll Quantity:</b> {order.get('auto_poll_votes_quantity', 0)}"
         )
 
         # Create control buttons
@@ -6899,12 +6911,14 @@ async def ensure_client_in_channel(client, channel_id):
     try:
         # Check if already a participant
         try:
-            full_chat = await client(GetFullChatRequest(channel_id))
+            # For Telethon, GetFullChannelRequest is more reliable for checking membership
+            await client(GetFullChannelRequest(channel_id))
             return True
-        except (UserNotParticipantError, ChannelPrivateError, ValueError):
+        except (UserNotParticipantError, ChannelPrivateError, ValueError, ChannelInvalidError):
             pass
 
         # Try to get entity to see if it's public
+        entity = None
         try:
             entity = await client.get_entity(channel_id)
             if hasattr(entity, 'username') and entity.username:
@@ -6915,28 +6929,41 @@ async def ensure_client_in_channel(client, channel_id):
             pass
 
         # If it's private or we don't have entity, we need an invite link
-        # Look for invite link in the order or channel collection
-        order = await orders_collection.find_one({"channel_id": channel_id})
-        invite_link = order.get("invite_link") if order else None
+        invite_link = None
         
+        # Try finding invite link in the order or channel collection
+        # Check orders first (most specific)
+        order = await orders_collection.find_one({"channel_id": channel_id})
+        if order:
+            invite_link = order.get("invite_link")
+            
         if not invite_link:
             channel_doc = await channels_collection.find_one({"channel_id": channel_id})
-            invite_link = channel_doc.get("invite_link") if channel_doc else None
+            if channel_doc:
+                invite_link = channel_doc.get("invite_link")
+
+        # Check if the bot was provided an invite link during the flow
+        if not invite_link:
+            user_id = order.get("user_id") if order else None
+            if user_id and user_id in user_configs:
+                invite_link = user_configs[user_id].invite_link
 
         if invite_link:
             try:
+                print(f"🔗 Attempting to join via link: {invite_link}")
                 if "t.me/+" in invite_link or "t.me/joinchat/" in invite_link:
-                    hash = invite_link.split('/')[-1].replace('+', '')
-                    await client(ImportChatInviteRequest(hash))
+                    link_hash = invite_link.split('/')[-1].replace('+', '')
+                    await client(ImportChatInviteRequest(link_hash))
                 else:
                     await client(JoinChannelRequest(invite_link))
                 print(f"✅ Joined channel via invite link: {channel_id}")
                 return True
-            except UserAlreadyParticipantError:
+            except (UserAlreadyParticipantError, ChatInviteAlready):
                 return True
             except Exception as e:
                 print(f"❌ Failed to join via invite link: {e}")
         
+        print(f"⚠️ Could not join channel {channel_id}: No invite link found or join failed")
         return False
     except Exception as e:
         print(f"❌ Error in ensure_client_in_channel: {e}")
