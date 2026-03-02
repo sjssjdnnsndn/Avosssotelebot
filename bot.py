@@ -1631,14 +1631,12 @@ async def start_manual_reactions(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🗳️ Order Votes")
 async def start_votes_order(message: types.Message, state: FSMContext):
     await state.update_data(service_type="poll_votes")
-    await state.set_state(OrderStates.waiting_for_content)
+    await state.set_state(OrderStates.SELECTING_CHANNEL)
     await message.answer(
-        "📨 Please forward the poll you want to boost\n"
-        "Or press '⬅️ Cancel Order' to go back",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
-            resize_keyboard=True
-        )
+        "🗳️ <b>Vote Order Service</b>\n\n"
+        "Please select a channel where the poll is located, or add a new one:",
+        reply_markup=get_channel_select_keyboard(),
+        parse_mode="HTML"
     )
 
 @dp.message(OrderStates.waiting_for_content, F.media_group_id)
@@ -1708,12 +1706,60 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     user_id = message.from_user.id
-    channel_id = message.forward_from_chat.id
+    
+    # If we are in poll_votes service, we expect the user to have selected a channel first
+    # and then forward the post from that channel.
+    if data.get('service_type') == 'poll_votes':
+        selected_channel_id = data.get('channel_id')
+        forwarded_channel_id = message.forward_from_chat.id
+        
+        if selected_channel_id and forwarded_channel_id != selected_channel_id:
+            await message.answer(
+                f"❌ This post is from a different channel!\n\n"
+                f"Please forward the poll from the channel you selected: <b>{data.get('channel_title')}</b>",
+                parse_mode="HTML"
+            )
+            return
+        
+        channel_id = forwarded_channel_id
+        channel_title = data.get('channel_title')
+    else:
+        channel_id = message.forward_from_chat.id
+        channel_title = message.forward_from_chat.title
 
     try:
         # Get channel info using Telethon
         client = active_clients[0] if active_clients else None
         if not client:
+            await message.answer("❌ No active Telegram clients available. Please contact admin.")
+            return
+
+        try:
+            # Get channel entity with Telethon
+            entity = await client.get_entity(PeerChannel(channel_id))
+            channel_title = entity.title
+            is_public = hasattr(entity, 'username') and entity.username is not None
+
+            # Get more details if possible
+            try:
+                full_channel = await client(GetFullChannelRequest(channel=entity))
+                is_member = full_channel.full_chat.participants_count > 0
+            except:
+                is_member = True  # Assume member if we can't check
+
+            print(f"Telethon channel info: {channel_title}, public: {is_public}, member: {is_member}")
+
+        except Exception as e:
+            print(f"Error fetching channel info with Telethon: {e}")
+            # Fallback to aiogram
+            try:
+                channel_info = await bot.get_chat(channel_id)
+                channel_title = channel_info.title
+                is_public = hasattr(channel_info, 'username') and channel_info.username is not None
+            except Exception as e:
+                print(f"Error fetching channel info: {e}")
+                await message.answer("❌ Could not fetch channel information. Please try again.")
+                return
             await message.answer("❌ No active Telegram clients available. Please contact admin.")
             return
 
@@ -3218,33 +3264,95 @@ async def cancel_order_callback(callback: types.CallbackQuery, state: FSMContext
     # Optionally, you can send a message back to the user indicating cancellation
 
 @dp.message(OrderStates.SELECTING_CHANNEL)
-async def handle_channel_selection(message: types.Message, state: FSMContext):
+async def handle_channel_selection_order(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
     data = await state.get_data()
-    channels = data.get('available_channels', [])
-    selected_title = message.text.replace("📢 ", "")
-
-    selected_channel = next((ch for ch in channels if ch['channel_title'] == selected_title), None)
-
-    if not selected_channel:
-        await message.answer("❌ Invalid channel selection. Please choose from the list.")
-        return
-
-    channel_id = selected_channel['channel_id']
-    channel_title = selected_channel['channel_title']
-
-    orders = await orders_collection.find({
-        "channel_id": channel_id,
-        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
-        "status": {"$in": ["confirmed", "processing"]}
-    }).sort("created_at", -1).to_list(None)
-
-    if not orders:
-        await message.answer(
-            f"ℹ️ No auto orders found for channel: {channel_title}",
-            reply_markup=get_main_menu_keyboard()
-        )
+    
+    if message.text == "⬅️ Back":
         await state.clear()
+        await message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
         return
+
+    if message.text == "📢 My Channels":
+        channels = await get_user_channels(user_id)
+        if not channels:
+            await message.answer("You haven't added any channels yet.")
+            return
+        await message.answer("Select a channel:", reply_markup=get_my_channels_keyboard(channels))
+        return
+
+    channel_id = None
+    channel_title = None
+    invite_link = None
+    is_public = True
+
+    if message.text.startswith("📢 "):
+        title = message.text[2:]
+        channels = await get_user_channels(user_id)
+        selected = next((c for c in channels if c['channel_title'] == title), None)
+        if selected:
+            channel_id = selected['channel_id']
+            channel_title = selected['channel_title']
+            invite_link = selected.get('invite_link')
+            is_public = selected.get('is_public', True)
+
+    if not channel_id:
+        # Check for request_chat handled by other events
+        return
+
+    await state.update_data(
+        channel_id=channel_id,
+        channel_title=channel_title,
+        invite_link=invite_link,
+        is_public=is_public
+    )
+
+    if not is_public and not invite_link:
+        await state.set_state(OrderStates.WAITING_FOR_INVITE_LINK)
+        await message.answer(
+            f"🔒 <b>{channel_title}</b> is a private channel.\n\n"
+            "Please provide an invite link so our accounts can join and vote:",
+            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Back")]], resize_keyboard=True),
+            parse_mode="HTML"
+        )
+    else:
+        await state.set_state(OrderStates.waiting_for_content)
+        await message.answer(
+            f"✅ Channel Selected: <b>{channel_title}</b>\n\n"
+            "📨 Now, please <b>forward the poll post</b> from this channel that you want to boost:",
+            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]], resize_keyboard=True),
+            parse_mode="HTML"
+        )
+
+@dp.message(OrderStates.WAITING_FOR_INVITE_LINK)
+async def handle_invite_link_input(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Back":
+        await state.set_state(OrderStates.SELECTING_CHANNEL)
+        await message.answer("Please select a channel:", reply_markup=get_channel_select_keyboard())
+        return
+
+    invite_link = message.text
+    if "t.me/" not in invite_link:
+        await message.answer("❌ Invalid invite link. Please send a valid Telegram invite link.")
+        return
+
+    data = await state.get_data()
+    channel_id = data.get('channel_id')
+    
+    await state.update_data(invite_link=invite_link)
+    if channel_id:
+        await channels_collection.update_one(
+            {"channel_id": channel_id},
+            {"$set": {"invite_link": invite_link}}
+        )
+
+    await state.set_state(OrderStates.waiting_for_content)
+    await message.answer(
+        "✅ Invite link saved.\n\n"
+        "📨 Now, please <b>forward the poll post</b> from this channel that you want to boost:",
+        reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]], resize_keyboard=True),
+        parse_mode="HTML"
+    )
 
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     now = datetime.utcnow()
