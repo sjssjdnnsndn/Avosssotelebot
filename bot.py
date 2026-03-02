@@ -57,10 +57,12 @@ from telethon.tl.types import InputPeerNotifySettings, InputNotifyPeer
 from html import escape as html_escape
 from flask import Flask, request
 from pyngrok import ngrok
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
 API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAG0HiQYlK2GaoAOijqrj81bO6VA3vGfAWg")
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://shuvamoy1:shuvamoy1@bableview.5yaumiu.mongodb.net/")
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
 PAYMENT_ADMIN_ID = 8094204927  # Admin to receive payment notifications
@@ -97,6 +99,9 @@ public_url = None
 
 # Initialize Flask server for OxaPay webhook
 flask_app = Flask(__name__)
+
+# Use a different port for Flask to avoid conflict with Replit's default port 5000
+FLASK_PORT = 5001
 
 # ===== OXAPAY WEBHOOK HANDLER ===== #
 @flask_app.route("/verify_payment", methods=["POST", "GET"])
@@ -349,6 +354,57 @@ def get_speed_name(speed_multiplier):
         return "Ultra Fast (2-3 hrs)", "⚡"
     else:
         return "Normal (5-6 hrs)", "🐢"
+
+def is_night_hours():
+    """Check if current IST time is in night hours (11 PM to 7 AM IST).
+    IST = UTC + 5:30. Night window: 23:00–07:00 IST."""
+    from datetime import timezone, timedelta as td
+    IST = timezone(td(hours=5, minutes=30))
+    ist_now = datetime.now(IST)
+    hour = ist_now.hour
+    return hour >= 23 or hour < 7
+
+def get_night_mode_delay_multiplier():
+    """Get the night mode divisor — delivery quantity is divided by 3 (≈70% slower)."""
+    return 3
+
+def calculate_delivery_time(quantity, delay_seconds, clients_count=1):
+    """
+    Calculate estimated delivery time based on quantity, delay, and active clients
+    Args:
+        quantity: Total views/reactions to deliver
+        delay_seconds: Delay between each action in seconds
+        clients_count: Number of active Telegram clients
+    Returns:
+        Formatted string like "3h 30m 0s"
+    """
+    # Calculate total time in seconds
+    # Each client can deliver independently, so divide by client count
+    total_seconds = (quantity / max(clients_count, 1)) * delay_seconds
+    
+    # Convert to hours, minutes, seconds
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    seconds = int(total_seconds % 60)
+    
+    # Format the output
+    return f"{hours}h {minutes}m {seconds}s"
+
+async def calculate_order_price(views_per_post, posts_per_day, days):
+    """Calculate order price based on parameters"""
+    pricing = await pricing_collection.find_one({"service_type": "views_by_followers"})
+    if not pricing:
+        return 0.0
+    
+    price_per_view = pricing.get("price_per_view", 0.0001)
+    total_views = views_per_post * posts_per_day * days
+    total_price = total_views * price_per_view
+    return round(total_price, 4)
+
+async def get_delivered_amount(order):
+    """Get the amount already delivered for an order"""
+    delivered = order.get("delivered_views", 0) or order.get("delivered_reactions", 0)
+    return delivered
 
 
 # ===== TELEGRAM ACCOUNT MANAGEMENT ===== #
@@ -688,18 +744,26 @@ async def process_view_order(client, channel_id, message_id):
         return False
 
 
-async def process_vote_order(client, channel_id, message_id, option_index):
+async def process_vote_order(client, channel_id, message_id, option_index, poll_options_count=None):
     try:
         await client(functions.account.UpdateStatusRequest(offline=False))
         # Get the input peer
         channel_entity = await client.get_entity(PeerChannel(channel_id))
         input_channel = InputPeerChannel(channel_entity.id, channel_entity.access_hash)
 
+        # Handle random vote selection
+        if option_index == "random" and poll_options_count:
+            # Randomly select an option from available options
+            option_index = random.randint(0, poll_options_count - 1)
+        elif option_index == "random":
+            # If no count provided, default to random between 0-9 (most polls have <10 options)
+            option_index = random.randint(0, 9)
+
         # Create the vote request
         await client(functions.messages.SendVoteRequest(
             peer=input_channel,
             msg_id=message_id,
-            options=str(option_index)  # This is the byte representation of the option index
+            options=[bytes([option_index])]  # Correct format: list of bytes
         ))
         return True
     except Exception as e:
@@ -825,7 +889,8 @@ async def create_order(
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
         "delivered_views": delivered_views,
-        "delivered_reactions": delivered_reactions
+        "delivered_reactions": delivered_reactions,
+        "custom_delay_seconds": None  # Default delay of 19 seconds
     }
 
     if poll_id:
@@ -1109,8 +1174,12 @@ class OrderStates(StatesGroup):
     CONFIGURING_VIEWS = State()
     CONFIGURING_REACTIONS = State()
     waiting_for_option = State()
+    waiting_for_vote_type = State()  # NEW: Ask user for specific or random votes
     SELECTING_CHANNEL = State()
     WAITING_FOR_INVITE_LINK = State()
+    ADJUST_DELAY = State()  # For custom delay adjustment
+    EDITING_ORDER = State()  # For editing order settings
+    EDIT_CONFIRMING = State()  # For confirming order edits
 
 class PaymentStates(StatesGroup):
     SELECT_METHOD = State()
@@ -1167,7 +1236,7 @@ async def get_config_text(config: ConfigData, is_reactions: bool = False) -> str
         return (
             "*⚙️ System Configuration:*\n"
             "_Please configure the necessary parameters to initiate the process!_\n\n"
-            f"❤️‍🔥 *Maximum Reactions Limit:* `Unlimited ∞`\n\n"
+            f"❤️‍🔥 *Maximum Reactions Limit:* `Max {len(active_clients)}`\n\n"
             f"📊 *Reaction Per Post:* `{reactions_count}`\n"
             f"📝 *Posts Per Day:* `{config.posts_per_day}`\n"
             f"📆 *Number of Days:* `{config.days}`\n"
@@ -1178,7 +1247,7 @@ async def get_config_text(config: ConfigData, is_reactions: bool = False) -> str
         return (
             "*⚙️ System Configuration:*\n"
             "_Please configure the necessary parameters to initiate the process!_\n\n"
-            f"👁️ *Maximum View Limit:* `Unlimited ∞`\n\n"
+            f"👁️ *Maximum View Limit:* `Max {len(active_clients)}`\n\n"
             f"📊 *Views Per Post:* `{config.total_views}`\n"
             f"📝 *Posts Per Day:* `{config.posts_per_day}`\n"
             f"📆 *Number of Days:* `{config.days}`\n"
@@ -1228,22 +1297,7 @@ def get_views_config_markup(config: ConfigData):
         width=6
     )
 
-    # Speed adjustment buttons
-    speed_emoji = "🐌" if config.speed_multiplier == 0.5 else ("🐢" if config.speed_multiplier == 1.0 else ("🚀" if config.speed_multiplier == 1.5 else "⚡"))
-    builder.row(
-        InlineKeyboardButton(text=f"{speed_emoji} Speed: {config.speed_name}", callback_data="show_speed")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🐌 Slow (7-8 hrs)", callback_data="speed:slow"),
-        InlineKeyboardButton(text="🐢 Normal (5-6 hrs)", callback_data="speed:normal"),
-        width=2
-    )
-    builder.row(
-        InlineKeyboardButton(text="🚀 Fast (3-4 hrs)", callback_data="speed:fast"),
-        InlineKeyboardButton(text="⚡ Ultra Fast (2-3 hrs)", callback_data="speed:ultra"),
-        width=2
-    )
-
+    # Speed button removed - users can adjust delay directly from Active Orders
     builder.row(
         InlineKeyboardButton(text="✅ Confirm Order", callback_data="action:order"),
         InlineKeyboardButton(text="🔙 Back", callback_data="action:back"),
@@ -1295,22 +1349,7 @@ def get_reaction_config_markup(config: ConfigData):
         width=6
     )
 
-    # Speed adjustment buttons
-    speed_emoji = "🐌" if config.speed_multiplier == 0.5 else ("🐢" if config.speed_multiplier == 1.0 else ("🚀" if config.speed_multiplier == 1.5 else "⚡"))
-    builder.row(
-        InlineKeyboardButton(text=f"{speed_emoji} Speed: {config.speed_name}", callback_data="show_speed")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🐌 Slow (7-8 hrs)", callback_data="speed:slow"),
-        InlineKeyboardButton(text="🐢 Normal (5-6 hrs)", callback_data="speed:normal"),
-        width=2
-    )
-    builder.row(
-        InlineKeyboardButton(text="🚀 Fast (3-4 hrs)", callback_data="speed:fast"),
-        InlineKeyboardButton(text="⚡ Ultra Fast (2-3 hrs)", callback_data="speed:ultra"),
-        width=2
-    )
-
+    # Speed button removed - users can adjust delay directly from Active Orders
     builder.row(
         InlineKeyboardButton(text="✅ Confirm Order", callback_data="action:order"),
         InlineKeyboardButton(text="🔙 Back", callback_data="action:back"),
@@ -1350,67 +1389,93 @@ async def active_orders_handler(message: types.Message):
         speed_multiplier = order.get("speed_multiplier", 1.0)
         speed_name = order.get("speed_name", "Normal")
 
+        is_muted = order.get("is_muted", False)
+        mute_str = "🔕 ON" if is_muted else "🔔 OFF"
+        random_views = order.get("random_views", 0)
+        high_low = order.get("high_low_descending", False)
+        high_low_str = "🟢 ON" if high_low else "🔴 OFF"
+        night_mode = order.get("night_mode_enabled", False)
+        night_str = "🌙 ON" if night_mode else "🌙 OFF"
+        custom_delay = order.get("custom_delay", 0)
+
         today_str = datetime.utcnow().strftime("%Y-%m-%d")
         days_passed = (datetime.utcnow() - created).days
         days_remaining = max(0, days - days_passed)
-        posts_done_today = len(order.get("processed_today", {}).get(today_str, []))
-        posts_left_today = max(0, posts_per_day - posts_done_today)
 
         if order["service_identifier"] == "views_by_followers":
             service_label = "Auto Follower Views"
             per_post = order.get("views_per_post", 0)
-            delivered = order.get("delivered_views", 0)
-            total = order.get("total_views", 0)
         else:
             service_label = "Auto Follower Reactions"
             per_post = order.get("reactions_per_post", 0)
-            delivered = order.get("delivered_reactions", 0)
-            total = order.get("total_reactions", 0)
 
-        if is_paused:
-            status_text = "⏸ <i>This campaign is currently paused.</i>"
+        # Calculate delay with custom adjustment
+        if speed_multiplier == 0.5:
+            base_delay_sec = 26
+        elif speed_multiplier == 1.0:
+            base_delay_sec = 19
+        elif speed_multiplier == 1.5:
+            base_delay_sec = 12
         else:
-            status_text = "▶️ <i>Your campaign is currently active.</i>"
+            base_delay_sec = 9
+        total_delay_sec = base_delay_sec + custom_delay
+        adj_str = f" ({custom_delay:+d}s custom)" if custom_delay != 0 else ""
+        hours, minutes = estimate_delivery_duration(per_post, speed_multiplier, 1)
+        time_str = ""
+        if hours > 0:
+            time_str += f"{hours}h "
+        time_str += f"{minutes}m"
 
-        speed_emoji = "🐌" if speed_multiplier == 0.5 else ("🐢" if speed_multiplier == 1.0 else ("🚀" if speed_multiplier == 1.5 else "⚡"))
+        night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>" if night_mode else ""
 
         text = (
-            f"📢 <b>Channel:</b> <i>{channel_title}</i> <code>(ID: {channel_id})</code>\n\n"
-            f"🎯 <b>Service:</b> <code>{service_label}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Per Post:</b> <code>{per_post}</code>\n"
-            f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
-            f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
-            f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code> (x{speed_multiplier}) - FREE\n"
-            f"💰 <b>Price:</b> <code>${charge:.3f}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🟡 <b>Remaining Today:</b> <code>{posts_left_today} Post(s)</code>\n"
-            f"⏳ <b>Time Left:</b> <code>{days_remaining} Day(s)</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{status_text}"
+            f"📺 <b>Your Channels:</b>\n\n"
+            f"<b>Channel Status :</b> 🟢 ON\n\n"
+            f"🟢 <b>Active Session:</b> {user_id}\n"
+            f"🆔 <b>Channel ID:</b> {channel_id}\n"
+            f"📛 <b>Channel Name:</b> {channel_title}\n"
+            f"🔗 <b>Channel Username:</b> @{channel_title}\n"
+            f"👀 <b>Views per Post:</b> {per_post}\n"
+            f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
+            f"🔀 <b>Random Views:</b> {random_views}\n"
+            f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
+            f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
+            f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
+            f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
+            f"🌙 <b>Night Mode:</b> {night_str}"
+            f"{night_note}"
         )
 
-        # Create speed control buttons
+        # Create control buttons
         builder = InlineKeyboardBuilder()
         builder.row(
-            InlineKeyboardButton(text="🐌 Slow (7-8 hrs)", callback_data=f"change_speed:{order['_id']}:slow"),
-            InlineKeyboardButton(text="🐢 Normal (5-6 hrs)", callback_data=f"change_speed:{order['_id']}:normal"),
+            InlineKeyboardButton(text="⚙️ Edit Settings", callback_data=f"edit_order_params:{order['_id']}"),
+            InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"edit_settings:{order['_id']}"),
             width=2
         )
         builder.row(
-            InlineKeyboardButton(text="🚀 Fast (3-4 hrs)", callback_data=f"change_speed:{order['_id']}:fast"),
-            InlineKeyboardButton(text="⚡ Ultra Fast (2-3 hrs)", callback_data=f"change_speed:{order['_id']}:ultra"),
+            InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
+            InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"change_speed_menu:{order['_id']}"),
             width=2
         )
-
-        # Add pause/resume button
-        if is_paused:
-            builder.row(InlineKeyboardButton(text="▶️ Resume", callback_data=f"resume:{order['_id']}"))
-        else:
-            builder.row(InlineKeyboardButton(text="⏸ Pause", callback_data=f"pause:{order['_id']}"))
-
-        # Add cancel order button
-        builder.row(InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}"))
+        builder.row(
+            InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
+            InlineKeyboardButton(text="Edit Random Views", callback_data=f"edit_random:{order['_id']}"),
+            width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text="🔔 Mute/Unmute", callback_data=f"toggle_mute:{order['_id']}"),
+            InlineKeyboardButton(text="🔘 Auto Poll/Votes", callback_data=f"auto_poll:{order['_id']}"),
+            width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text=f"🌙 Night Mode: {night_str}", callback_data=f"night_mode:{order['_id']}"),
+            InlineKeyboardButton(text="❌ Cancel Subscription", callback_data=f"cancel_order:{order['_id']}"),
+            width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu")
+        )
 
         await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
 
@@ -1574,6 +1639,52 @@ async def handle_album(message: types.Message):
     )
 
 
+@dp.message(OrderStates.waiting_for_content)
+async def process_regular_post(message: types.Message, state: FSMContext):
+    """Handle non-forwarded messages or polls sent directly"""
+    if message.poll:
+        # It's a poll sent directly (not forwarded)
+        data = await state.get_data()
+        if data.get('service_type') == 'poll_votes':
+            # Use the poll information directly from the message
+            try:
+                poll_options = [opt.text for opt in message.poll.options]
+                await state.update_data(
+                    channel_id=message.chat.id,
+                    poll_id=message.poll.id,
+                    poll_question=message.poll.question,
+                    poll_options=poll_options,
+                    content_id=message.message_id
+                )
+
+                builder = ReplyKeyboardBuilder()
+                for i, option in enumerate(poll_options, start=1):
+                    builder.add(KeyboardButton(text=f"{i}️⃣ {option[:15]}"))
+                builder.adjust(2)
+                builder.row(KeyboardButton(text="⬅️ Cancel Order"))
+
+                await message.answer(
+                    f"🗳️ Selected: <b>{message.poll.question[:50]}</b>\n"
+                    "👉 Which option do you want to boost?",
+                    reply_markup=builder.as_markup(resize_keyboard=True),
+                    parse_mode="HTML"
+                )
+                await state.set_state(OrderStates.waiting_for_option)
+                return
+            except Exception as e:
+                print(f"Error processing direct poll: {e}")
+                await message.answer("❌ Error processing poll. Please ensure the bot has access to this poll.")
+                return
+
+    # If it's not a poll or not the right service
+    await message.answer(
+        "Please send the post properly as mentioned!",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+            resize_keyboard=True
+        )
+    )
+
 @dp.message(OrderStates.waiting_for_content, F.forward_from_chat)
 async def process_forwarded_post(message: types.Message, state: FSMContext):
     # Check if this is part of an album
@@ -1658,25 +1769,40 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
             await state.set_state(OrderStates.waiting_for_quantity)
 
         elif data['service_type'] == 'poll_votes':
+            try:
+                # For polls, we handle both forwarded and direct
+                # First try to use the message as is if it's a poll
+                target_poll = message.poll
+                target_chat_id = message.chat.id
+                target_message_id = message.message_id
 
-                destination_chat_id = -1002859595679
-
-                forwarded = await message.forward(
-                    chat_id=destination_chat_id,
-                )
-                # print(forwarded)
-                if not forwarded.poll:
-                    await message.answer("❌ This forwarded message doesn't contain a poll.")
+                if not target_poll:
+                    # If it's not a poll but forwarded, it might be a forwarded poll
+                    if message.forward_from_chat or message.forward_from:
+                        try:
+                            # Try forwarding to internal channel as fallback/verification
+                            destination_chat_id = -1002859595679
+                            forwarded = await message.forward(chat_id=destination_chat_id)
+                            if forwarded.poll:
+                                target_poll = forwarded.poll
+                                target_chat_id = destination_chat_id
+                                target_message_id = forwarded.message_id
+                        except Exception as forward_err:
+                            print(f"Forwarding failed: {forward_err}")
+                            # If forwarding fails (private channel), we can't do much if it's not already a poll object
+                
+                if not target_poll:
+                    await message.answer("❌ This message doesn't contain a poll or is from a restricted private channel.")
                     return
 
-                poll_options = [opt.text for opt in forwarded.poll.options]
+                poll_options = [opt.text for opt in target_poll.options]
 
                 await state.update_data(
-                    channel_id=destination_chat_id,
-                    poll_id=forwarded.poll.id,
-                    poll_question=forwarded.poll.question,
+                    channel_id=target_chat_id,
+                    poll_id=target_poll.id,
+                    poll_question=target_poll.question,
                     poll_options=poll_options,
-                    content_id=forwarded.message_id  # ✅ Correct: This is the destination message ID
+                    content_id=target_message_id
                 )
 
                 builder = ReplyKeyboardBuilder()
@@ -1686,12 +1812,16 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
                 builder.row(KeyboardButton(text="⬅️ Cancel Order"))
 
                 await message.answer(
-                    f"🗳️ Selected: <b>{forwarded.poll.question[:50]}</b>\n"
+                    f"🗳️ Selected: <b>{target_poll.question[:50]}</b>\n"
                     "👉 Which option do you want to boost?",
                     reply_markup=builder.as_markup(resize_keyboard=True),
                     parse_mode="HTML"
                 )
                 await state.set_state(OrderStates.waiting_for_option)
+
+            except Exception as e:
+                print(f"Error in poll handler: {e}")
+                await message.answer("❌ Failed to process poll. Please ensure it's a public poll or send it directly.")
 
 
     except Exception as e:
@@ -1720,13 +1850,62 @@ async def process_option_selection(message: types.Message, state: FSMContext):
     selected_option = options[option_index]
     await state.update_data(selected_option=selected_option, option_index=option_index)
 
-    await message.answer(
-        f"✅ Selected: {selected_option}\n"
-        "🔢 How many votes would you like?\n"
-        "Or press '⬅️ Cancel Order' to go back",
-        reply_markup=get_quantity_keyboard()
+    # NEW: Ask user if they want specific or random votes
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🎯 Specific Option (Selected)")],
+            [KeyboardButton(text="🎲 Random Votes (All Options)")],
+            [KeyboardButton(text="⬅️ Cancel Order")]
+        ],
+        resize_keyboard=True
     )
-    await state.set_state(OrderStates.waiting_for_quantity)
+    
+    await message.answer(
+        f"✅ Selected: {selected_option}\n\n"
+        "🗳️ Vote Delivery Type:\n"
+        "• 🎯 Specific - All votes on selected option\n"
+        "• 🎲 Random - Votes randomly distributed on all options\n\n"
+        "Choose delivery type:",
+        reply_markup=keyboard
+    )
+    await state.set_state(OrderStates.waiting_for_vote_type)
+
+
+@dp.message(OrderStates.waiting_for_vote_type)
+async def process_vote_type(message: types.Message, state: FSMContext):
+    if message.text == "⬅️ Cancel Order":
+        await cancel_order(message, state)
+        return
+    
+    data = await state.get_data()
+    
+    if message.text == "🎯 Specific Option (Selected)":
+        # Keep the selected option_index as is
+        vote_mode = "specific"
+        await state.update_data(vote_mode=vote_mode)
+        
+        await message.answer(
+            f"✅ Specific votes on: {data.get('selected_option')}\n"
+            "🔢 How many votes would you like?\n"
+            "Or press '⬅️ Cancel Order' to go back",
+            reply_markup=get_quantity_keyboard()
+        )
+        await state.set_state(OrderStates.waiting_for_quantity)
+        
+    elif message.text == "🎲 Random Votes (All Options)":
+        # Set option_index to "random" for random distribution
+        await state.update_data(vote_mode="random", option_index="random", selected_option="Random (All Options)")
+        
+        await message.answer(
+            "✅ Random votes on all poll options\n"
+            "🔢 How many votes would you like?\n"
+            "Or press '⬅️ Cancel Order' to go back",
+            reply_markup=get_quantity_keyboard()
+        )
+        await state.set_state(OrderStates.waiting_for_quantity)
+    else:
+        await message.answer("❌ Please choose from the keyboard buttons.")
+        return
 
 
 @dp.message(OrderStates.waiting_for_emoji)
@@ -1886,6 +2065,19 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         option_index=data.get('option_index'),
         option_text=data.get('selected_option')
     )
+    
+    # Store vote mode and poll options for random voting
+    if service_identifier == 'poll_votes':
+        vote_mode = data.get('vote_mode', 'specific')
+        poll_options = data.get('poll_options', [])
+        await orders_collection.update_one(
+            {"_id": order_id},
+            {"$set": {
+                "vote_mode": vote_mode,
+                "poll_options": poll_options,
+                "poll_options_count": len(poll_options)
+            }}
+        )
 
     await update_user_balance(user_id, -charge)
 
@@ -1978,87 +2170,7 @@ async def change_order_speed(callback: types.CallbackQuery):
         }}
     )
 
-    # Get updated order
-    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-
-    # Prepare updated message
-    channel_title = order.get("channel_title", "Unknown Channel")
-    channel_id = order.get("channel_id")
-    posts_per_day = order.get("posts_per_day", 0)
-    charge = order.get("charge", 0.0)
-    days = order.get("days", 0)
-    created = order.get("created_at")
-    is_paused = order.get("is_paused", False)
-
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    days_passed = (datetime.utcnow() - created).days
-    days_remaining = max(0, days - days_passed)
-    posts_done_today = len(order.get("processed_today", {}).get(today_str, []))
-    posts_left_today = max(0, posts_per_day - posts_done_today)
-
-    if order["service_identifier"] == "views_by_followers":
-        service_label = "Auto Follower Views"
-        per_post = order.get("views_per_post", 0)
-        delivered = order.get("delivered_views", 0)
-        total = order.get("total_views", 0)
-    else:
-        service_label = "Auto Follower Reactions"
-        per_post = order.get("reactions_per_post", 0)
-        delivered = order.get("delivered_reactions", 0)
-        total = order.get("total_reactions", 0)
-
-    if is_paused:
-        status_text = "⏸ <i>This campaign is currently paused.</i>"
-    else:
-        status_text = "▶️ <i>Your campaign is currently active.</i>"
-
-    speed_emoji = "🐌" if speed_multiplier == 0.5 else ("🐢" if speed_multiplier == 1.0 else ("🚀" if speed_multiplier == 1.5 else "⚡"))
-
-    text = (
-        f"📢 <b>Channel:</b> <i>{channel_title}</i> <code>(ID: {channel_id})</code>\n\n"
-        f"🎯 <b>Service:</b> <code>{service_label}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Per Post:</b> <code>{per_post}</code>\n"
-        f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
-        f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
-        f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code> (x{speed_multiplier}) - FREE\n"
-        f"💰 <b>Price:</b> <code>${charge:.3f}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🟡 <b>Remaining Today:</b> <code>{posts_left_today} Post(s)</code>\n"
-        f"⏳ <b>Time Left:</b> <code>{days_remaining} Day(s)</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{status_text}"
-    )
-
-    # Create speed control buttons
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="🐌 Slow (7-8 hrs)", callback_data=f"change_speed:{order_id}:slow"),
-        InlineKeyboardButton(text="🐢 Normal (5-6 hrs)", callback_data=f"change_speed:{order_id}:normal"),
-        width=2
-    )
-    builder.row(
-        InlineKeyboardButton(text="🚀 Fast (3-4 hrs)", callback_data=f"change_speed:{order_id}:fast"),
-        InlineKeyboardButton(text="⚡ Ultra Fast (2-3 hrs)", callback_data=f"change_speed:{order_id}:ultra"),
-        width=2
-    )
-
-    # Add pause/resume button
-    mute_status = "🔕 Unmute" if order.get("is_muted", False) else "🔔 Mute"
-    builder.row(
-        InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"{'resume' if is_paused else 'pause'}:{order_id}"),
-        InlineKeyboardButton(text=mute_status, callback_data=f"toggle_mute:{order_id}"),
-        width=2
-    )
-    
-    # Add Change Speed button
-    builder.row(InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order_id}"))
-
-    # Add cancel order button
-    builder.row(InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order_id}"))
-
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
-    await callback.answer(f"✅ Speed changed to {speed_name} (FREE)", show_alert=True)
+    await send_updated_order_message(callback, order_id, f"✅ Speed changed to {speed_name} (FREE)")
 
 @dp.callback_query(F.data.startswith("show_speed_options:"))
 async def show_speed_options(callback: types.CallbackQuery):
@@ -2101,6 +2213,7 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
 
+    user_id = order.get("user_id")
     channel_id = order.get("channel_id")
     channel_title = order.get("channel_title", "Unknown")
     posts_per_day = order.get("posts_per_day", 0)
@@ -2108,82 +2221,105 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
     days = order.get("days", 0)
     created = order.get("created_at")
     is_paused = order.get("is_paused", False)
+    speed_multiplier = order.get("speed_multiplier", 1.0)
+    
+    is_muted = order.get("is_muted", False)
+    mute_str = "🔕 ON" if is_muted else "🔔 OFF"
+    random_views = order.get("random_views", 0)
+    high_low = order.get("high_low_descending", False)
+    high_low_str = "🟢 ON" if high_low else "🔴 OFF"
+    night_mode = order.get("night_mode_enabled", False)
+    night_str = "🌙 ON" if night_mode else "🌙 OFF"
+    custom_delay = order.get("custom_delay", 0)
 
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     days_passed = (datetime.utcnow() - created).days
     days_remaining = max(0, days - days_passed)
-    posts_done_today = len(order.get("processed_today", {}).get(today_str, []))
-    posts_left_today = max(0, posts_per_day - posts_done_today)
 
     if order["service_identifier"] == "views_by_followers":
         service_label = "Auto Follower Views"
         per_post = order.get("views_per_post", 0)
-        delivered = order.get("delivered_views", 0)
-        total = order.get("total_views", 0)
     else:
         service_label = "Auto Follower Reactions"
         per_post = order.get("reactions_per_post", 0)
-        delivered = order.get("delivered_reactions", 0)
-        total = order.get("total_reactions", 0)
 
-    if order["status"] == "completed":
-        status_text = "☑️ <i>This campaign is completed.</i>"
-    elif is_paused:
-        status_text = "⏸ <i>This campaign is currently paused.</i>"
+    # Calculate base delay seconds based on speed
+    if speed_multiplier == 0.5:
+        base_delay_sec = 26
+        base_delay_str = "25-27s"
+    elif speed_multiplier == 1.0:
+        base_delay_sec = 19
+        base_delay_str = "19-20s"
+    elif speed_multiplier == 1.5:
+        base_delay_sec = 12
+        base_delay_str = "12-13s"
     else:
-        status_text = "▶️ <i>Your campaign is currently active.</i>"
+        base_delay_sec = 9
+        base_delay_str = "9-10s"
 
-    speed_multiplier = order.get("speed_multiplier", 1.0)
-    speed_name, speed_emoji = get_speed_name(speed_multiplier)
-    
-    is_muted = order.get("is_muted", False)
-    mute_text = "🔕 ON" if is_muted else "🔔 OFF"
-    
-    # Calculate delivery estimation
-    clients_count = len(active_clients) or 1
-    delay_info = get_delay_text(per_post, speed_multiplier, clients_count)
+    total_delay_sec = base_delay_sec + custom_delay
+    adj_str = f" ({custom_delay:+d}s custom)" if custom_delay != 0 else ""
+    hours, minutes = estimate_delivery_duration(per_post, speed_multiplier, 1)
+    time_str = ""
+    if hours > 0:
+        time_str += f"{hours}h "
+    time_str += f"{minutes}m"
+
+    # Night mode note
+    night_note = ""
+    if night_mode:
+        night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>"
 
     text = (
-        f"📢 <b>Channel:</b> <i>{channel_title}</i> <code>(ID: {channel_id})</code>\n\n"
-        f"🎯 <b>Service:</b> <code>{service_label}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Per Post:</b> <code>{per_post}</code>\n"
-        f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
-        f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
-        f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code>\n"
-        f"🔔 <b>Mute/Unmute:</b> <code>{mute_text}</code>\n"
-        f"⏳ <b>{delay_info}</b>\n"
-        f"💰 <b>Price:</b> <code>${charge:.3f}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🟡 <b>Remaining Today:</b> <code>{posts_left_today} Post(s)</code>\n"
-        f"⏳ <b>Time Left:</b> <code>{days_remaining} Day(s)</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{status_text}"
+        f"📺 <b>Your Channels:</b>\n\n"
+        f"<b>Channel Status :</b> 🟢 ON\n\n"
+        f"🟢 <b>Active Session:</b> {user_id}\n"
+        f"🆔 <b>Channel ID:</b> {channel_id}\n"
+        f"📛 <b>Channel Name:</b> {channel_title}\n"
+        f"🔗 <b>Channel Username:</b> @{channel_title}\n"
+        f"👀 <b>Views per Post:</b> {per_post}\n"
+        f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
+        f"🔀 <b>Random Views:</b> {random_views}\n"
+        f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
+        f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
+        f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
+        f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
+        f"🌙 <b>Night Mode:</b> {night_str}"
+        f"{night_note}"
     )
 
-    # Generate dynamic button
     if order["status"] != "completed":
-        button_text = "▶️ Resume" if is_paused else "⏸ Pause"
-        button_action = "resume" if is_paused else "pause"
-        mute_status = "🔕 Unmute" if order.get("is_muted", False) else "🔔 Mute"
-        
         builder = InlineKeyboardBuilder()
         builder.row(
-            InlineKeyboardButton(text=button_text, callback_data=f"{button_action}:{order_id}"),
-            InlineKeyboardButton(text=mute_status, callback_data=f"toggle_mute:{order_id}"),
+            InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"edit_settings:{order['_id']}"),
+            InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
             width=2
         )
         builder.row(
-            InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order_id}"),
-            InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order_id}"),
+            InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
+            InlineKeyboardButton(text="Edit Random Views", callback_data=f"edit_random:{order['_id']}"),
             width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text="🔔 Mute/Unmute", callback_data=f"toggle_mute:{order['_id']}"),
+            InlineKeyboardButton(text="🔘 Auto Poll/Votes", callback_data=f"auto_poll:{order['_id']}"),
+            width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text=f"🌙 Night Mode: {night_str}", callback_data=f"night_mode:{order['_id']}"),
+            InlineKeyboardButton(text="❌ Cancel Subscription", callback_data=f"cancel_order:{order['_id']}"),
+            width=2
+        )
+        builder.row(
+            InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu")
         )
         markup = builder.as_markup()
     else:
         markup = None
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-    await callback.answer(alert_text)
+    if alert_text:
+        await callback.answer(alert_text)
 
 @dp.callback_query(F.data.startswith("toggle_mute:"))
 async def toggle_mute_campaign(callback: types.CallbackQuery):
@@ -2196,8 +2332,800 @@ async def toggle_mute_campaign(callback: types.CallbackQuery):
     new_mute = not current_mute
     await orders_collection.update_one({"_id": ObjectId(order_id)}, {"$set": {"is_muted": new_mute}})
     
-    alert_text = "🔕 Unmuted." if current_mute else "🔔 Muted."
-    await send_updated_order_message(callback, order_id, alert_text)
+    mute_label = "🔕 Muted" if new_mute else "🔔 Unmuted"
+    await send_updated_order_message(callback, order_id, f"{mute_label}")
+
+@dp.callback_query(F.data.startswith("toggle_highlow:"))
+async def toggle_highlow_setting(callback: types.CallbackQuery):
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_highlow = order.get("high_low_descending", False)
+    await orders_collection.update_one({"_id": ObjectId(order_id)}, {"$set": {"high_low_descending": not current_highlow}})
+    
+    await send_updated_order_message(callback, order_id, "High -> Low toggled")
+
+@dp.callback_query(F.data.startswith("speed_menu:"))
+async def open_speed_menu(callback: types.CallbackQuery):
+    order_id = callback.data.split(":")[1]
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🐌 Slow (7-8 hrs)", callback_data=f"change_speed:{order_id}:slow"),
+        InlineKeyboardButton(text="🐢 Normal (5-6 hrs)", callback_data=f"change_speed:{order_id}:normal"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text="🚀 Fast (3-4 hrs)", callback_data=f"change_speed:{order_id}:fast"),
+        InlineKeyboardButton(text="⚡ Ultra Fast (2-3 hrs)", callback_data=f"change_speed:{order_id}:ultra"),
+        width=2
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
+    await callback.message.edit_reply_markup(reply_markup=builder.as_markup())
+
+# ===== DYNAMIC DELAY ADJUSTMENT =====
+@dp.callback_query(F.data.startswith("edit_settings:"))
+async def edit_order_settings(callback: types.CallbackQuery):
+    """Show delay adjustment options with Hours, Minutes, Seconds"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    # Get custom delay in seconds (default 19s)
+    total_delay_seconds = order.get("custom_delay_seconds", 19)
+    
+    # Convert to hours, minutes, seconds
+    hours = total_delay_seconds // 3600
+    minutes = (total_delay_seconds % 3600) // 60
+    seconds = total_delay_seconds % 60
+    
+    # Get order quantity (views or reactions)
+    quantity = order.get("quantity", 0)
+    if quantity == 0:
+        # For followers-based orders
+        quantity = order.get("total_views", 0) or order.get("total_reactions", 0)
+    
+    # Get delivered count
+    delivered = order.get("delivered_views", 0) or order.get("delivered_reactions", 0)
+    remaining = max(0, quantity - delivered)
+    
+    # Calculate estimated delivery time
+    clients_count = len(active_clients) if active_clients else 1
+    
+    # Total time for remaining items
+    total_seconds_remaining = (remaining / max(clients_count, 1)) * total_delay_seconds
+    hours_remaining = int(total_seconds_remaining // 3600)
+    minutes_remaining = int((total_seconds_remaining % 3600) // 60)
+    seconds_remaining = int(total_seconds_remaining % 60)
+    
+    time_remaining_str = f"{hours_remaining}h {minutes_remaining}m {seconds_remaining}s"
+    
+    # Total estimated delivery time for all items
+    total_time_all = calculate_delivery_time(quantity, total_delay_seconds, clients_count)
+    
+    builder = InlineKeyboardBuilder()
+    
+    # Display current delay prominently
+    delay_display = f"{hours}h {minutes}m {seconds}s" if hours > 0 else (f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s")
+    builder.row(
+        InlineKeyboardButton(text=f"⏱️ Delay: {delay_display}", callback_data=f"delay_info:{order_id}"),
+        width=1
+    )
+    
+    # Hours adjustment
+    builder.row(
+        InlineKeyboardButton(text="⏪", callback_data=f"adjust_hours:{order_id}:-1"),
+        InlineKeyboardButton(text=f"⏰ {hours}h", callback_data=f"delay_info:{order_id}"),
+        InlineKeyboardButton(text="⏩", callback_data=f"adjust_hours:{order_id}:1"),
+        width=3
+    )
+    
+    # Minutes adjustment
+    builder.row(
+        InlineKeyboardButton(text="⏪", callback_data=f"adjust_minutes:{order_id}:-1"),
+        InlineKeyboardButton(text=f"⏱️ {minutes}m", callback_data=f"delay_info:{order_id}"),
+        InlineKeyboardButton(text="⏩", callback_data=f"adjust_minutes:{order_id}:1"),
+        width=3
+    )
+    
+    # Seconds adjustment
+    builder.row(
+        InlineKeyboardButton(text="⏪", callback_data=f"adjust_seconds:{order_id}:-1"),
+        InlineKeyboardButton(text=f"⏲️ {seconds}s", callback_data=f"delay_info:{order_id}"),
+        InlineKeyboardButton(text="⏩", callback_data=f"adjust_seconds:{order_id}:1"),
+        width=3
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_delay:{order_id}"),
+        width=1
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
+    
+    service_type = 'views' if 'view' in order.get('service_type', '').lower() else 'reactions'
+    
+    text = (
+        f"⏱️ <b>Delay Adjustment</b>\n\n"
+        f"<b>Delay per {service_type[:-1]}: {delay_display}</b>\n\n"
+        f"📊 <b>Order Status:</b>\n"
+        f"• Total: {quantity} {service_type}\n"
+        f"• Delivered: {delivered} {service_type}\n"
+        f"• Remaining: {remaining} {service_type}\n\n"
+        f"⏳ <b>Time Estimates:</b>\n"
+        f"• Time Remaining: {time_remaining_str}\n"
+        f"• Total Time: {total_time_all}\n\n"
+        f"👥 Active Clients: {clients_count}\n\n"
+        f"🔧 <b>Adjust delay using buttons above:</b>\n"
+        f"• Hours: {hours}h\n"
+        f"• Minutes: {minutes}m\n"
+        f"• Seconds: {seconds}s\n\n"
+        f"Click ✅ Confirm to apply changes."
+    )
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("adjust_hours:"))
+async def adjust_hours_handler(callback: types.CallbackQuery):
+    """Adjust delay by hours"""
+    parts = callback.data.split(":")
+    order_id = parts[1]
+    adjustment = int(parts[2])
+    
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_delay_seconds = order.get("custom_delay_seconds", 19)
+    new_delay_seconds = max(1, current_delay_seconds + (adjustment * 3600))
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"custom_delay_seconds": new_delay_seconds, "updated_at": datetime.utcnow()}}
+    )
+    
+    hours = new_delay_seconds // 3600
+    await callback.answer(f"✅ Hours: {hours}h")
+    await edit_order_settings(callback)
+
+@dp.callback_query(F.data.startswith("adjust_minutes:"))
+async def adjust_minutes_handler(callback: types.CallbackQuery):
+    """Adjust delay by minutes"""
+    parts = callback.data.split(":")
+    order_id = parts[1]
+    adjustment = int(parts[2])
+    
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_delay_seconds = order.get("custom_delay_seconds", 19)
+    new_delay_seconds = max(1, current_delay_seconds + (adjustment * 60))
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"custom_delay_seconds": new_delay_seconds, "updated_at": datetime.utcnow()}}
+    )
+    
+    minutes = (new_delay_seconds % 3600) // 60
+    await callback.answer(f"✅ Minutes: {minutes}m")
+    await edit_order_settings(callback)
+
+@dp.callback_query(F.data.startswith("adjust_seconds:"))
+async def adjust_seconds_handler(callback: types.CallbackQuery):
+    """Adjust delay by seconds"""
+    parts = callback.data.split(":")
+    order_id = parts[1]
+    adjustment = int(parts[2])
+    
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_delay_seconds = order.get("custom_delay_seconds", 19)
+    new_delay_seconds = max(1, current_delay_seconds + adjustment)
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"custom_delay_seconds": new_delay_seconds, "updated_at": datetime.utcnow()}}
+    )
+    
+    seconds = new_delay_seconds % 60
+    await callback.answer(f"✅ Seconds: {seconds}s")
+    await edit_order_settings(callback)
+
+@dp.callback_query(F.data.startswith("confirm_delay:"))
+async def confirm_delay_handler(callback: types.CallbackQuery):
+    """Confirm delay adjustments and return to order view"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    total_delay_seconds = order.get("custom_delay_seconds", 19)
+    
+    # Convert to readable format
+    hours = total_delay_seconds // 3600
+    minutes = (total_delay_seconds % 3600) // 60
+    seconds = total_delay_seconds % 60
+    
+    delay_display = f"{hours}h {minutes}m {seconds}s" if hours > 0 else (f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s")
+    
+    await callback.answer(f"✅ Delay confirmed: {delay_display}")
+    await send_updated_order_message(callback, order_id, f"✅ Delay adjustment confirmed: {delay_display}")
+
+
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_main_menu(callback: types.CallbackQuery):
+    """Handle back to main menu callback"""
+    await callback.message.delete()
+    await callback.message.answer(
+        "Welcome! Please select a service:",
+        reply_markup=get_main_menu_keyboard()
+    )
+    await callback.answer("🏠 Returned to main menu")
+
+
+@dp.callback_query(F.data.startswith("delay_info:"))
+async def delay_info(callback: types.CallbackQuery):
+    await callback.answer("ℹ️ Adjust delay using -1s or +1s buttons", show_alert=True)
+
+
+# ===== EDIT ORDER PARAMETERS =====
+async def show_edit_interface(message, state: FSMContext, order_id):
+    """Display the order editing interface with keyboard buttons"""
+    data = await state.get_data()
+    new_views = data.get("new_views_per_post", 0)
+    new_posts = data.get("new_posts_per_day", 0)
+    new_days = data.get("new_days", 0)
+    delivered = data.get("delivered_amount", 0)
+    
+    original_total = data.get("original_total_views", 0)
+    new_total = new_views * new_posts * new_days
+    
+    # Calculate pricing
+    is_reactions = data.get("service_type") == "reactions_by_followers"
+    if is_reactions:
+        original_price = await calculate_reactions_charge(
+            data.get("original_views_per_post"),
+            data.get("original_posts_per_day"),
+            data.get("original_days")
+        )
+        new_price = await calculate_reactions_charge(new_views, new_posts, new_days)
+    else:
+        original_price = await calculate_views_charge(
+            data.get("original_views_per_post") * data.get("original_posts_per_day") * data.get("original_days"),
+            data.get("original_posts_per_day"),
+            data.get("original_days")
+        )
+        # Note: calculate_views_charge expects total_views, not views_per_post
+        new_total_views_calc = new_views * new_posts * new_days
+        new_price = await calculate_views_charge(new_total_views_calc, new_posts, new_days)
+    
+    price_diff = new_price - original_price
+    
+    # Only allow service increase - check if trying to reduce
+    if new_total < original_total:
+        # Reset to original if reduced
+        new_views = data.get("original_views_per_post")
+        new_posts = data.get("original_posts_per_day")
+        new_days = data.get("original_days")
+        new_total = original_total
+        new_price = original_price
+        price_diff = 0
+        await state.update_data(
+            new_views_per_post=new_views,
+            new_posts_per_day=new_posts,
+            new_days=new_days
+        )
+    
+    # Price display - only show extra cost
+    if price_diff > 0:
+        price_text = f"💰 <b>Extra Charge:</b> ₹{abs(price_diff):.4f}"
+    else:
+        price_text = f"💰 <b>Extra Charge:</b> ₹0.0000 (No changes)"
+    
+    text = (
+        f"⚙️ <b>Edit Order Settings</b>\n"
+        f"<i>Note: केवल service बढ़ाई जा सकती है</i>\n\n"
+        f"<b>📊 Max Views Limit:</b> 5050\n\n"
+        f"📊 <b>Total Views:</b> {new_total}\n"
+        f"👀 <b>Views per Post:</b> {new_views}\n"
+        f"📝 <b>Posts Per Day:</b> {new_posts}\n"
+        f"📅 <b>No. of Days:</b> {new_days}\n\n"
+        f"{price_text}"
+    )
+    
+    # Build keyboard - ONLY INCREMENT BUTTONS
+    builder = InlineKeyboardBuilder()
+    
+    # Total Views section - only increase buttons
+    builder.row(InlineKeyboardButton(text=f"📊 Total Views: {new_total}", callback_data="info:total"))
+    builder.row(
+        InlineKeyboardButton(text="+10", callback_data=f"edit_adjust:views:10"),
+        InlineKeyboardButton(text="+100", callback_data=f"edit_adjust:views:100"),
+        InlineKeyboardButton(text="+500", callback_data=f"edit_adjust:views:500"),
+        width=3
+    )
+    
+    # Posts Per Day section - only increase buttons
+    builder.row(InlineKeyboardButton(text=f"📝 Posts Per Day: {new_posts}", callback_data="info:posts"))
+    builder.row(
+        InlineKeyboardButton(text="+1", callback_data=f"edit_adjust:posts:1"),
+        InlineKeyboardButton(text="+10", callback_data=f"edit_adjust:posts:10"),
+        InlineKeyboardButton(text="+50", callback_data=f"edit_adjust:posts:50"),
+        width=3
+    )
+    
+    # Days section - only increase buttons
+    builder.row(InlineKeyboardButton(text=f"📅 No. of Days: {new_days}", callback_data="info:days"))
+    builder.row(
+        InlineKeyboardButton(text="+1", callback_data=f"edit_adjust:days:1"),
+        InlineKeyboardButton(text="+15", callback_data=f"edit_adjust:days:15"),
+        InlineKeyboardButton(text="+30", callback_data=f"edit_adjust:days:30"),
+        width=3
+    )
+    
+    # Confirm button - only show if service is increased
+    if new_total > original_total:
+        builder.row(InlineKeyboardButton(text="✅ Confirm Edit", callback_data=f"confirm_edit:{order_id}"))
+    
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
+    
+    # Edit or send new message
+    try:
+        await message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    except:
+        await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("edit_order_params:"))
+async def edit_order_parameters(callback: types.CallbackQuery, state: FSMContext):
+    """Show order parameter editing interface"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    # Get current parameters
+    views_per_post = order.get("views_per_post", 0)
+    posts_per_day = order.get("posts_per_day", 0)
+    days = order.get("days", 0)
+    delivered = await get_delivered_amount(order)
+    
+    # Calculate current total views
+    current_total_views = views_per_post * posts_per_day * days
+    
+    # Store in state
+    await state.update_data(
+        order_id=str(order_id),
+        service_type=order.get("service_identifier"),
+        original_views_per_post=views_per_post,
+        original_posts_per_day=posts_per_day,
+        original_days=days,
+        original_total_views=current_total_views,
+        delivered_amount=delivered,
+        new_views_per_post=views_per_post,
+        new_posts_per_day=posts_per_day,
+        new_days=days
+    )
+    await state.set_state(OrderStates.EDITING_ORDER)
+    
+    # Show editing interface
+    await show_edit_interface(callback.message, state, order_id)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("edit_adjust:"))
+async def edit_adjustment_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Handle parameter adjustments"""
+    parts = callback.data.split(":")
+    param_type = parts[1]  # views, posts, days
+    adjustment = int(parts[2])
+    
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    
+    # Get current values
+    new_views = data.get("new_views_per_post", 0)
+    new_posts = data.get("new_posts_per_day", 0)
+    new_days = data.get("new_days", 0)
+    
+    # Apply adjustment based on type
+    if param_type == "views":
+        new_views = max(0, new_views + adjustment)
+        await state.update_data(new_views_per_post=new_views)
+    elif param_type == "posts":
+        new_posts = max(0, new_posts + adjustment)
+        await state.update_data(new_posts_per_day=new_posts)
+    elif param_type == "days":
+        new_days = max(0, new_days + adjustment)
+        await state.update_data(new_days=new_days)
+    
+    # Refresh interface
+    await show_edit_interface(callback.message, state, order_id)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("confirm_edit:"))
+async def confirm_edit_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Confirm and apply order edits"""
+    order_id = callback.data.split(":")[1]
+    data = await state.get_data()
+    
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        await state.clear()
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    # Get new parameters
+    new_views = data.get("new_views_per_post", 0)
+    new_posts = data.get("new_posts_per_day", 0)
+    new_days = data.get("new_days", 0)
+    delivered = data.get("delivered_amount", 0)
+    
+    new_total = new_views * new_posts * new_days
+    original_total = data.get("original_total_views", 0)
+    
+    # Only allow service increase
+    if new_total < original_total:
+        await callback.answer(
+            "⚠️ Service को केवल बढ़ाया जा सकता है, कम नहीं किया जा सकता।",
+            show_alert=True
+        )
+        return
+    
+    # Calculate price difference
+    is_reactions = data.get("service_type") == "reactions_by_followers"
+    if is_reactions:
+        original_price = await calculate_reactions_charge(
+            data.get("original_views_per_post"),
+            data.get("original_posts_per_day"),
+            data.get("original_days")
+        )
+        new_price = await calculate_reactions_charge(new_views, new_posts, new_days)
+    else:
+        original_price = await calculate_views_charge(
+            data.get("original_views_per_post") * data.get("original_posts_per_day") * data.get("original_days"),
+            data.get("original_posts_per_day"),
+            data.get("original_days")
+        )
+        new_total_views_calc = new_views * new_posts * new_days
+        new_price = await calculate_views_charge(new_total_views_calc, new_posts, new_days)
+    
+    price_diff = new_price - original_price
+    
+    # Check if price difference is positive (service increase)
+    if price_diff <= 0:
+        await callback.answer("❌ No service increase detected.", show_alert=True)
+        return
+    
+    # Get user's current balance
+    user_id = order.get("user_id")
+    user = await users_collection.find_one({"user_id": user_id})
+    current_balance = user.get("balance", 0) if user else 0
+    
+    # Check if sufficient balance
+    if current_balance < price_diff:
+        await callback.answer(
+            f"❌ Insufficient Balance!\n\n"
+            f"Required: ₹{price_diff:.4f}\n"
+            f"Available: ₹{current_balance:.4f}\n"
+            f"Short by: ₹{(price_diff - current_balance):.4f}\n\n"
+            f"Please recharge your account.",
+            show_alert=True
+        )
+        await state.clear()
+        return
+    
+    # Update order in database
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {
+            "$set": {
+                "views_per_post": new_views,
+                "posts_per_day": new_posts,
+                "days": new_days,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    # Deduct from balance
+    await users_collection.update_one(
+        {"user_id": user_id},
+        {"$inc": {"balance": -price_diff}}
+    )
+    
+    new_balance = current_balance - price_diff
+    balance_msg = f"💳 Extra Cost: ₹{price_diff:.4f} deducted from your balance.\n💰 New Balance: ₹{new_balance:.4f}"
+    
+    # Clear state
+    await state.clear()
+    
+    # Show success message
+    await callback.message.edit_text(
+        f"✅ <b>Order Updated Successfully!</b>\n\n"
+        f"📊 <b>New Settings:</b>\n"
+        f"👀 Views per Post: {new_views}\n"
+        f"📝 Posts per Day: {new_posts}\n"
+        f"📅 Days: {new_days}\n"
+        f"📊 Total Views: {new_total}\n\n"
+        f"{balance_msg}",
+        parse_mode="HTML"
+    )
+    
+    await callback.answer("✅ Order updated successfully!")
+    
+    # Send back to order view after 2 seconds
+    await asyncio.sleep(2)
+    await send_updated_order_message(callback, order_id, "Order settings updated")
+
+
+# ===== AUTO POLL/VOTES FEATURE =====
+@dp.callback_query(F.data.startswith("auto_poll:"))
+async def auto_poll_votes_menu(callback: types.CallbackQuery):
+    """Auto Poll/Votes quantity management"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_quantity = order.get("auto_poll_votes_quantity", 0)
+    auto_poll_enabled = order.get("auto_poll_enabled", False)
+    status_text = "🟢 ON" if auto_poll_enabled else "🔴 OFF"
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="-100", callback_data=f"poll_qty:{order_id}:-100"),
+        InlineKeyboardButton(text="-10", callback_data=f"poll_qty:{order_id}:-10"),
+        InlineKeyboardButton(text="-1", callback_data=f"poll_qty:{order_id}:-1"),
+        width=3
+    )
+    builder.row(
+        InlineKeyboardButton(text="+1", callback_data=f"poll_qty:{order_id}:+1"),
+        InlineKeyboardButton(text="+10", callback_data=f"poll_qty:{order_id}:+10"),
+        InlineKeyboardButton(text="+100", callback_data=f"poll_qty:{order_id}:+100"),
+        width=3
+    )
+    
+    toggle_text = "🔴 Turn OFF" if auto_poll_enabled else "🟢 Turn ON"
+    builder.row(InlineKeyboardButton(text=toggle_text, callback_data=f"toggle_poll:{order_id}"))
+    builder.row(
+        InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_poll:{order_id}"),
+        width=1
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
+    
+    text = (
+        f"🗳️ <b>Auto Poll/Votes Configuration</b>\n\n"
+        f"<b>Status:</b> {status_text}\n"
+        f"<b>Quantity:</b> {current_quantity}\n\n"
+        f"ℹ️ This feature will randomly send votes to all options in your poll.\n"
+        f"The vote speed will match your views speed.\n\n"
+        f"Adjust quantity using buttons below:\n"
+        f"Click ✅ Confirm to apply changes."
+    )
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("poll_qty:"))
+async def adjust_poll_quantity(callback: types.CallbackQuery):
+    """Adjust auto poll votes quantity"""
+    parts = callback.data.split(":")
+    order_id = parts[1]
+    adjustment = int(parts[2])
+    
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_qty = order.get("auto_poll_votes_quantity", 0)
+    new_qty = max(0, current_qty + adjustment)
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"auto_poll_votes_quantity": new_qty, "updated_at": datetime.utcnow()}}
+    )
+    
+    await callback.answer(f"✅ Poll Quantity: {new_qty}")
+    await auto_poll_votes_menu(callback)
+
+@dp.callback_query(F.data.startswith("confirm_poll:"))
+async def confirm_poll_handler(callback: types.CallbackQuery):
+    """Confirm auto poll settings and return to order view"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    poll_qty = order.get("auto_poll_votes_quantity", 0)
+    poll_status = "ON" if order.get("auto_poll_enabled", False) else "OFF"
+    await send_updated_order_message(callback, order_id, f"✅ Auto Poll confirmed: {poll_status} ({poll_qty})")
+
+
+@dp.callback_query(F.data.startswith("toggle_poll:"))
+async def toggle_auto_poll(callback: types.CallbackQuery):
+    """Toggle auto poll votes ON/OFF"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_status = order.get("auto_poll_enabled", False)
+    new_status = not current_status
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"auto_poll_enabled": new_status, "updated_at": datetime.utcnow()}}
+    )
+    
+    await auto_poll_votes_menu(callback)
+
+
+# ===== NIGHT MODE FEATURE =====
+@dp.callback_query(F.data.startswith("night_mode:"))
+async def night_mode_toggle(callback: types.CallbackQuery):
+    """Toggle night mode for slower delivery during night hours"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_status = order.get("night_mode_enabled", False)
+    new_status = not current_status
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"night_mode_enabled": new_status, "updated_at": datetime.utcnow()}}
+    )
+    
+    status_text = "🟢 ON" if new_status else "🔴 OFF"
+    await send_updated_order_message(callback, order_id, f"🌙 Night Mode: {status_text}")
+
+
+# ===== EDIT RANDOM VIEWS =====
+@dp.callback_query(F.data.startswith("edit_random:"))
+async def edit_random_views(callback: types.CallbackQuery):
+    """Edit random views setting"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_random = order.get("random_views", 0)
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="-5", callback_data=f"random_adj:{order_id}:-5"),
+        InlineKeyboardButton(text="-1", callback_data=f"random_adj:{order_id}:-1"),
+        InlineKeyboardButton(text=f"📊 {current_random}", callback_data=f"random_info:{order_id}"),
+        InlineKeyboardButton(text="+1", callback_data=f"random_adj:{order_id}:+1"),
+        InlineKeyboardButton(text="+5", callback_data=f"random_adj:{order_id}:+5"),
+        width=5
+    )
+    builder.row(
+        InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_random:{order_id}"),
+        width=1
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
+    
+    text = (
+        f"🔀 <b>Random Views Adjustment</b>\n\n"
+        f"Current Random Views: {current_random}\n\n"
+        f"Adjust using buttons below:\n"
+        f"Click ✅ Confirm to apply changes."
+    )
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("random_adj:"))
+async def adjust_random_views(callback: types.CallbackQuery):
+    """Adjust random views"""
+    parts = callback.data.split(":")
+    order_id = parts[1]
+    adjustment = int(parts[2])
+    
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    current_random = order.get("random_views", 0)
+    new_random = max(0, current_random + adjustment)  # Prevent negative values
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"random_views": new_random, "updated_at": datetime.utcnow()}}
+    )
+    
+    await callback.answer(f"✅ Random Views: ±{new_random}")
+    await edit_random_views(callback)
+
+
+@dp.callback_query(F.data.startswith("confirm_random:"))
+async def confirm_random_handler(callback: types.CallbackQuery):
+    """Confirm random views adjustments and return to order view"""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+    
+    random_views = order.get("random_views", 0)
+    await callback.answer(f"✅ Random Views confirmed: ±{random_views}")
+    await send_updated_order_message(callback, order_id, f"✅ Random Views confirmed: ±{random_views}")
+
+@dp.callback_query(F.data.startswith("random_info:"))
+async def random_info(callback: types.CallbackQuery):
+    await callback.answer("ℹ️ Adjust random views variation", show_alert=True)
+
+
+# ===== COMBI SPEED =====
+@dp.callback_query(F.data.startswith("combi_speed:"))
+async def combi_speed_feature(callback: types.CallbackQuery):
+    """Combination speed settings"""
+    order_id = callback.data.split(":")[1]
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔄 Normal + Night Mode", callback_data=f"combi_apply:{order_id}:normal_night"))
+    builder.row(InlineKeyboardButton(text="⚡ Fast + High→Low", callback_data=f"combi_apply:{order_id}:fast_highlow"))
+    builder.row(InlineKeyboardButton(text="🚀 Ultra Fast + Auto Polls", callback_data=f"combi_apply:{order_id}:ultra_poll"))
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
+    
+    text = "🔄 <b>Combi Speed Settings</b>\n\nSelect a combination preset:"
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("combi_apply:"))
+async def apply_combi_speed(callback: types.CallbackQuery):
+    """Apply combination speed preset"""
+    parts = callback.data.split(":")
+    order_id = parts[1]
+    preset = parts[2]
+    
+    update_data = {"updated_at": datetime.utcnow()}
+    
+    if preset == "normal_night":
+        update_data.update({
+            "speed_multiplier": 1.0,
+            "speed_name": "Normal (5-6 hrs)",
+            "night_mode_enabled": True
+        })
+        msg = "✅ Applied: Normal Speed + Night Mode"
+    elif preset == "fast_highlow":
+        update_data.update({
+            "speed_multiplier": 1.5,
+            "speed_name": "Fast (3-4 hrs)",
+            "high_low_descending": True
+        })
+        msg = "✅ Applied: Fast Speed + High→Low Views"
+    elif preset == "ultra_poll":
+        update_data.update({
+            "speed_multiplier": 2.0,
+            "speed_name": "Ultra Fast (2-3 hrs)",
+            "auto_poll_enabled": True
+        })
+        msg = "✅ Applied: Ultra Fast + Auto Polls"
+    else:
+        msg = "✅ Settings applied"
+    
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": update_data}
+    )
+    
+    await send_updated_order_message(callback, order_id, msg)
+
 
 @dp.callback_query(F.data.startswith("cancel_order:"))
 async def cancel_order_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -2328,20 +3256,39 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
         speed_name, speed_emoji = get_speed_name(speed_multiplier)
         is_muted = order.get("is_muted", False)
         mute_text = "🔕 ON" if is_muted else "🔔 OFF"
-        
-        # Calculate delivery estimation
+        night_mode = order.get("night_mode_enabled", False)
+        night_text = "🌙 ON" if night_mode else "🌙 OFF"
+        custom_delay = order.get("custom_delay", 0)
+
+        # Calculate delay with custom adjustment
+        per_post_qty = order.get('views_per_post', order.get('reactions_per_post', 0))
+        if speed_multiplier == 0.5:
+            base_delay_sec = 26
+        elif speed_multiplier == 1.0:
+            base_delay_sec = 19
+        elif speed_multiplier == 1.5:
+            base_delay_sec = 12
+        else:
+            base_delay_sec = 9
+        total_delay_sec = base_delay_sec + custom_delay
+        adj_str = f" ({custom_delay:+d}s custom)" if custom_delay != 0 else ""
         clients_count = len(active_clients) or 1
-        delay_info = get_delay_text(order.get('views_per_post', order.get('reactions_per_post', 0)), speed_multiplier, clients_count)
+        hours, minutes = estimate_delivery_duration(per_post_qty, speed_multiplier, clients_count)
+        time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+        delay_info = f"Delay: {total_delay_sec}s{adj_str} (Delivers {per_post_qty} in {time_str})"
+
+        night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>" if night_mode else ""
 
         text = (
             f"📢 <b>Channel:</b> <i>{channel_title}</i> <code>(ID: {channel_id})</code>\n\n"
             f"🎯 <b>Service:</b> <code>{order.get('service_identifier', 'Unknown')}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Per Post:</b> <code>{order.get('views_per_post', order.get('reactions_per_post', 0))}</code>\n"
+            f"📊 <b>Per Post:</b> <code>{per_post_qty}</code>\n"
             f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
             f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
             f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code>\n"
             f"🔔 <b>Mute/Unmute:</b> <code>{mute_text}</code>\n"
+            f"🌙 <b>Night Mode:</b> <code>{night_text}</code>\n"
             f"⏳ <b>{delay_info}</b>\n"
             f"💰 <b>Price:</b> <code>${charge:.3f}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2349,6 +3296,7 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
             f"⏳ <b>Time Left:</b> <code>{days_remaining} Day(s)</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"{status_text}"
+            f"{night_note}"
         )
 
         # Buttons
@@ -2974,7 +3922,7 @@ async def handle_views_adjustment(callback: types.CallbackQuery, state: FSMConte
 
 
 # === Reaction Callback === #
-@dp.callback_query(F.data.startswith(("r_posts:", "r_days:", "reactions:", "speed:")))
+@dp.callback_query(F.data.startswith(("r_posts:", "r_days:", "reactions:", "r_speed:")))
 async def handle_reaction_adjustment(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     config = user_configs.get(user_id)
@@ -2985,8 +3933,8 @@ async def handle_reaction_adjustment(callback: types.CallbackQuery, state: FSMCo
     try:
         field, value = callback.data.split(":")
 
-        if field == "speed":
-            # Handle speed adjustment
+        if field == "r_speed":
+            # Handle speed adjustment for reactions — uses separate r_speed: prefix
             if value == "slow":
                 config.speed_multiplier = 0.5
                 config.speed_name = "Slow (7-8 hrs)"
@@ -3084,9 +4032,12 @@ async def handle_order(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "action:back")
 async def handle_back(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.message.answer(
-        "Main Menu",
+        "🔹 Main Menu:",
         reply_markup=get_main_menu_keyboard()
     )
     await callback.answer()
@@ -5934,10 +6885,13 @@ async def process_manual_reactions(order, to_deliver):
 
 async def process_poll_votes(order, to_deliver):
     tasks = []
+    poll_options_count = order.get('poll_options_count', 10)  # Default 10 options
+    option_index = order.get('option_index', 0)
+    
     for i in range(to_deliver):
         client = active_clients[i % len(active_clients)]
-        await ensure_client_in_channel(client,order['channel_id'])
-        tasks.append(process_vote_order(client, order['channel_id'], order['content_id'], order['option_index']))
+        await ensure_client_in_channel(client, order['channel_id'])
+        tasks.append(process_vote_order(client, order['channel_id'], order['content_id'], option_index, poll_options_count))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return sum(1 for r in results if r is True)
@@ -6220,6 +7174,13 @@ async def ub_moniter():
                 if desired_quantity < 1:
                     continue
 
+                # Night Mode: if enabled AND currently in night hours (11 PM–7 AM IST),
+                # divide delivery quantity by 3 (≈70% slower) so views trickle in naturally
+                if order.get("night_mode_enabled", False) and is_night_hours():
+                    original_quantity = desired_quantity
+                    desired_quantity = max(1, desired_quantity // 3)
+                    print(f"🌙 Night Mode active: reduced {metric} from {original_quantity} → {desired_quantity} (÷3)")
+
                 print(f"👑 MASTER: Distributing {desired_quantity} {metric} to workers for post {message_id}")
 
                 # 1️⃣ Pre-store post count
@@ -6264,6 +7225,68 @@ async def ub_moniter():
                 )
 
                 print(f"✅ Finished post {message_id} — Delivered {success_count} {metric} — Total: {new_delivered}/{total_quantity}")
+            
+            # ===== AUTO POLL/VOTES HANDLING =====
+            # Check if this is a poll message
+            if hasattr(message, 'media') and hasattr(message.media, 'poll'):
+                poll = message.media.poll
+                poll_options_count = len(poll.answers) if hasattr(poll, 'answers') else 10
+                
+                print(f"🗳️ MASTER detected new POLL in channel {channel_id}, message_id: {message_id}")
+                print(f"   Poll Question: {poll.question if hasattr(poll, 'question') else 'N/A'}")
+                print(f"   Options Count: {poll_options_count}")
+                
+                # Find all active orders with auto_poll enabled
+                poll_orders = await orders_collection.find({
+                    "channel_id": channel_id,
+                    "status": {"$in": ["confirmed", "processing"]},
+                    "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
+                    "auto_poll_enabled": True
+                }).to_list(None)
+                
+                for poll_order in poll_orders:
+                    if poll_order.get("is_paused", False):
+                        continue
+                    
+                    # Check if order is still valid
+                    order_created = poll_order.get('created_at', datetime.utcnow()).replace(tzinfo=None)
+                    expiry_day = order_created.date() + timedelta(days=poll_order.get('days', 0))
+                    expiry_time = datetime.combine(expiry_day + timedelta(days=1), datetime.min.time())
+                    if datetime.utcnow() >= expiry_time:
+                        continue
+                    
+                    auto_poll_quantity = poll_order.get("auto_poll_votes_quantity", 0)
+                    if auto_poll_quantity < 1:
+                        continue
+                    
+                    # Check if already processed
+                    last_processed_poll = poll_order.get('last_processed_poll_id', 0)
+                    if message_id <= last_processed_poll:
+                        continue
+                    
+                    # Deliver votes
+                    print(f"🗳️ Delivering {auto_poll_quantity} auto poll votes for order {poll_order['_id']}")
+                    
+                    # Use speed multiplier from order
+                    success_count = await process_auto_poll_votes_master_worker(
+                        poll_order, message_id, channel_id, auto_poll_quantity, poll_options_count
+                    )
+                    
+                    if success_count > 0:
+                        # Update order with delivered votes
+                        await orders_collection.update_one(
+                            {"_id": poll_order["_id"]},
+                            {
+                                "$set": {
+                                    "last_processed_poll_id": message_id,
+                                    "updated_at": datetime.utcnow()
+                                },
+                                "$inc": {
+                                    "delivered_poll_votes": success_count
+                                }
+                            }
+                        )
+                        print(f"✅ Delivered {success_count} auto poll votes")
 
         except Exception as e:
             print(f"❌ Error in monitor: {e}")
@@ -6283,10 +7306,10 @@ async def ub_moniter():
 async def process_auto_views_master_worker(order, message_id, quantity):
     try:
         channel_id = order['channel_id']
-        speed_multiplier = order.get('speed_multiplier', 1.0)
-        speed_name = order.get('speed_name', 'Normal')
+        # Use custom_delay_seconds if available, otherwise default to 19s
+        delay_seconds = order.get('custom_delay_seconds') or random.uniform(10, 15)
 
-        print(f"📊 Distributing {quantity} views across {len(active_clients)} clients at {speed_name} speed")
+        print(f"📊 Distributing {quantity} views across {len(active_clients)} clients with {delay_seconds}s delay")
 
         tasks = []
         for i in range(quantity):
@@ -6297,14 +7320,12 @@ async def process_auto_views_master_worker(order, message_id, quantity):
                 print(f"⚠️ Client {i % len(active_clients)} couldn't join channel")
                 continue
 
-            # Apply speed delay using speed config function
-            delay = calculate_delay_for_speed(speed_multiplier, base_delay=1.0)
-
-            tasks.append(delayed_view_order(client, channel_id, message_id, delay * i))
+            # Use custom delay
+            tasks.append(delayed_view_order(client, channel_id, message_id, delay_seconds * i))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         success_count = sum(1 for r in results if r is True)
-        print(f"✅ Delivered {success_count}/{quantity} views successfully at {speed_name} speed")
+        print(f"✅ Delivered {success_count}/{quantity} views successfully with {delay_seconds}s delay")
         return success_count
     except Exception as e:
         print(f"❌ View processing failed: {e}")
@@ -6322,10 +7343,10 @@ async def delayed_view_order(client, channel_id, message_id, delay):
 async def process_auto_reactions_master_worker(order, message_id, quantity):
     try:
         channel_id = order['channel_id']
-        speed_multiplier = order.get('speed_multiplier', 1.0)
-        speed_name = order.get('speed_name', 'Normal')
+        # Use custom_delay_seconds if available, otherwise default to 19s
+        delay_seconds = order.get('custom_delay_seconds') or random.uniform(10, 15)
 
-        print(f"❤️ Distributing {quantity} reactions across {len(active_clients)} clients at {speed_name} speed")
+        print(f"❤️ Distributing {quantity} reactions across {len(active_clients)} clients with {delay_seconds}s delay")
 
         tasks = []
         for i in range(quantity):
@@ -6343,14 +7364,12 @@ async def process_auto_reactions_master_worker(order, message_id, quantity):
                 client_reactions[key] = random.choice(["❤️", "🔥", "👍", "👏", "🎉", "🤩", "😍"])
             emoji = client_reactions[key]
 
-            # Apply speed delay using speed config function
-            delay = calculate_delay_for_speed(speed_multiplier, base_delay=1.0)
-
-            tasks.append(delayed_reaction_order(client, channel_id, message_id, emoji, delay * i))
+            # Use custom delay
+            tasks.append(delayed_reaction_order(client, channel_id, message_id, emoji, delay_seconds * i))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         success_count = sum(1 for r in results if r is True)
-        print(f"✅ Delivered {success_count}/{quantity} reactions successfully at {speed_name} speed")
+        print(f"✅ Delivered {success_count}/{quantity} reactions successfully with {delay_seconds}s delay")
         return success_count
     except Exception as e:
         print(f"❌ Reaction processing failed: {e}")
@@ -6362,6 +7381,57 @@ async def delayed_reaction_order(client, channel_id, message_id, emoji, delay):
     """Delayed reaction delivery for speed control"""
     await asyncio.sleep(delay)
     return await process_reaction_order(client, channel_id, message_id, emoji=emoji)
+
+
+# Distributed Poll Votes Delivery - All clients work together (for Auto Poll/Votes)
+async def process_auto_poll_votes_master_worker(order, message_id, channel_id, quantity, poll_options_count):
+    try:
+        # Use speed multiplier from order
+        speed_multiplier = order.get("speed_multiplier", 1.0)
+        custom_delay = order.get("custom_delay_seconds", 0)
+        
+        # Calculate base delay seconds based on speed
+        if speed_multiplier == 0.5: base_delay_sec = 26
+        elif speed_multiplier == 1.0: base_delay_sec = 19
+        elif speed_multiplier == 1.5: base_delay_sec = 12
+        else: base_delay_sec = 9
+        
+        delay_seconds = base_delay_sec + custom_delay
+        
+        print(f"🗳️ Distributing {quantity} poll votes across {len(active_clients)} clients with ~{delay_seconds}s delay")
+
+        tasks = []
+        for i in range(quantity):
+            client_index = i % len(active_clients)
+            client = active_clients[client_index]
+
+            # Ensure client is in channel
+            if not await ensure_client_in_channel(client, channel_id):
+                print(f"    ⚠️ Client {client_index} couldn't join channel")
+                continue
+            
+            # Random option selection for each vote
+            option_index = "random"
+            
+            # Calculate delay for this specific action
+            current_delay = delay_seconds * i
+            tasks.append(delayed_vote_order(client, channel_id, message_id, option_index, poll_options_count, current_delay))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        success_count = sum(1 for r in results if r is True)
+        print(f"✅ Delivered {success_count}/{quantity} poll votes successfully with {delay_seconds}s base delay")
+        return success_count
+    except Exception as e:
+        print(f"❌ Poll vote processing failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
+
+async def delayed_vote_order(client, channel_id, message_id, option_index, poll_options_count, delay):
+    """Delayed vote delivery for speed control"""
+    await asyncio.sleep(delay)
+    return await process_vote_order(client, channel_id, message_id, option_index, poll_options_count)
+
 
 
 async def process_reaction_order(client, channel_id, message_id, emoji=None):
@@ -6549,8 +7619,19 @@ async def ensure_client_in_channel_2(client, invite_link: str):
         # Private Link
         if is_private_link:
             try:
-                await client(ImportChatInviteRequest(invite_code))
+                updates = await client(ImportChatInviteRequest(invite_code))
+                print(f"✅ Joined private channel via invite link")
+                
+                # Extract channel from updates
+                if hasattr(updates, 'chats') and updates.chats:
+                    entity = updates.chats[0]
+                    print(f"✅ Got channel entity from join response: {entity.title if hasattr(entity, 'title') else 'Unknown'}")
+                else:
+                    entity = None
+                    
             except UserAlreadyParticipantError:
+                print(f"ℹ️ Already a member of this private channel")
+                entity = None  # Will need to find it later
                 pass  # We're already in
             except FloodWaitError as e:
                 result["error"] = f"Flood wait: {e.seconds}s. Please try again later."
@@ -6618,23 +7699,43 @@ async def ensure_client_in_channel_2(client, invite_link: str):
                 result["error"] = f"❌ Failed to join channel: {str(e)}"
                 return result
 
-        # Try to get entity by invite link
-        try:
-            entity = await client.get_entity(invite_link)
-        except ValueError as ve:
-            # If direct link doesn't work, try by username (for public channels)
-            if "joinchat" not in invite_link.lower() and "+" not in invite_link:
-                try:
-                    entity = await client.get_entity(invite_code)
-                except Exception as e:
-                    result["error"] = f"Could not find channel. Please verify the link is correct and try again."
-                    return result
-            else:
-                result["error"] = "Could not resolve channel from invite link. The link may be invalid or expired."
+        # Try to get entity by invite link (skip if we already have entity from join response)
+        if not entity:
+            try:
+                # Try direct link first
+                entity = await client.get_entity(invite_link)
+            except ValueError as ve:
+                # If direct link doesn't work, try alternative methods
+                if is_private_link:
+                    # For private channels, try to get from dialogs
+                    try:
+                        print(f"🔍 Searching for private channel in dialogs...")
+                        async for dialog in client.iter_dialogs(limit=200):
+                            if isinstance(dialog.entity, Channel):
+                                # Check if this is the channel we just joined
+                                # Private channels don't have usernames, so we need to find by recent activity
+                                entity = dialog.entity
+                                print(f"✅ Found potential channel: {dialog.name}")
+                                # For private channels, we'll use the first channel we find
+                                # This works because we just joined it
+                                break
+                        
+                        if not entity:
+                            result["error"] = "Could not find the private channel after joining. Please try again."
+                            return result
+                    except Exception as e:
+                        result["error"] = f"Could not locate private channel: {str(e)}"
+                        return result
+                else:
+                    # Public channel - try by username
+                    try:
+                        entity = await client.get_entity(invite_code)
+                    except Exception as e:
+                        result["error"] = f"Could not find channel. Please verify the link is correct and try again."
+                        return result
+            except Exception as e:
+                result["error"] = f"Error accessing channel: {str(e)}"
                 return result
-        except Exception as e:
-            result["error"] = f"Error accessing channel: {str(e)}"
-            return result
 
         # Handle different entity types
         if isinstance(entity, (Channel, ChannelForbidden)):
@@ -6744,46 +7845,81 @@ async def validate_invite_link_only(client, invite_link: str):
         if is_private_link:
             try:
                 from telethon.tl.functions.messages import CheckChatInviteRequest
+                from telethon.tl.functions.messages import ImportChatInviteRequest
+                from telethon.tl.types import ChatInviteAlready as TLChatInviteAlready
+
                 chat_invite = await client(CheckChatInviteRequest(invite_code))
-                if hasattr(chat_invite, 'chat'):
+
+                # Case 1: client is already a member
+                if isinstance(chat_invite, (ChatInviteAlready, TLChatInviteAlready)):
+                    channel = chat_invite.chat
+                    result.update({
+                        "success": True,
+                        "channel_id": channel.id,
+                        "channel_title": getattr(channel, "title", "Private Channel"),
+                        "username": getattr(channel, "username", None),
+                        "is_public": bool(getattr(channel, "username", None)),
+                    })
+                    return result
+
+                # Case 2: CheckChatInviteRequest returned an object with .chat or .channel
+                entity = None
+                if hasattr(chat_invite, 'chat') and chat_invite.chat:
                     entity = chat_invite.chat
-                elif hasattr(chat_invite, 'channel'):
+                elif hasattr(chat_invite, 'channel') and chat_invite.channel:
                     entity = chat_invite.channel
-                else:
-                    entity = None
 
                 if entity and isinstance(entity, (Channel, ChannelForbidden)):
                     result.update({
                         "success": True,
                         "channel_id": entity.id,
-                        "channel_title": getattr(entity, "title", "Unknown Channel"),
+                        "channel_title": getattr(entity, "title", "Private Channel"),
                         "username": getattr(entity, "username", None),
                         "is_public": bool(getattr(entity, "username", None)),
                     })
                     return result
-                elif isinstance(chat_invite, ChatInviteAlready):
-                    channel = chat_invite.chat
-                    result.update({
-                        "success": True,
-                        "channel_id": channel.id,
-                        "channel_title": getattr(channel, "title", "Unknown Channel"),
-                        "username": getattr(channel, "username", None),
-                        "is_public": bool(getattr(channel, "username", None)),
-                    })
-                    return result
-                else:
-                    result.update({
-                        "success": True,
-                        "channel_id": getattr(entity, 'id', None) if entity else None,
-                        "channel_title": getattr(entity, "title", "Private Channel") if entity else "Private Channel",
-                        "username": None,
-                        "is_public": False,
-                    })
-                    if result["channel_id"]:
+
+                # Case 3: ChatInvite type — client is not yet a member and the response
+                # has no .chat/.channel entity (only title/photo). Join to get real channel ID.
+                try:
+                    join_result = await client(ImportChatInviteRequest(invite_code))
+                    if hasattr(join_result, 'chats') and join_result.chats:
+                        channel = join_result.chats[0]
+                        result.update({
+                            "success": True,
+                            "channel_id": channel.id,
+                            "channel_title": getattr(channel, "title", "Private Channel"),
+                            "username": getattr(channel, "username", None),
+                            "is_public": bool(getattr(channel, "username", None)),
+                        })
                         return result
-                    result["error"] = "Could not resolve private channel info."
-                    result["success"] = False
-                    return result
+                except UserAlreadyParticipantError:
+                    # Already a member but CheckChatInviteRequest returned no entity.
+                    # Try to get entity by invite hash directly.
+                    try:
+                        entity = await client.get_entity(f"t.me/+{invite_code}")
+                        result.update({
+                            "success": True,
+                            "channel_id": entity.id,
+                            "channel_title": getattr(entity, "title", "Private Channel"),
+                            "username": getattr(entity, "username", None),
+                            "is_public": bool(getattr(entity, "username", None)),
+                        })
+                        return result
+                    except Exception:
+                        pass
+                except Exception as join_err:
+                    print(f"[validate_invite_link_only] Could not join via ImportChatInviteRequest: {join_err}")
+
+                # Fallback: return partial info using invite metadata (title only, no ID)
+                invite_title = getattr(chat_invite, "title", "Private Channel")
+                result["error"] = (
+                    f"Could not resolve channel ID for private link. "
+                    f"Channel title from invite: '{invite_title}'. "
+                    "Make sure the bot account has joined the channel, or share the channel directly."
+                )
+                return result
+
             except errors.InviteHashExpiredError:
                 result["error"] = "This invite link has expired. Please get a new invite link."
                 return result
@@ -6968,12 +8104,129 @@ async def unmute_channel_for_client(client, channel_id):
 
 def run_flask_server():
     """Run Flask webhook server"""
-    print("\n🌐 Flask webhook server running...")
+    print(f"\n🌐 Flask webhook server running on port {FLASK_PORT}...")
     if public_url:
         print(f"Endpoint: {public_url}/verify_payment\n")
     else:
-        print("Endpoint: http://localhost:5000/verify_payment (webhook disabled)\n")
-    flask_app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+        print(f"Endpoint: http://localhost:{FLASK_PORT}/verify_payment (webhook disabled)\n")
+    flask_app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False)
+
+
+# ===== NIGHT MODE AUTOMATION =====
+async def enable_night_mode_auto():
+    """Automatically enable night mode at 11 PM IST for all active orders"""
+    try:
+        print("🌙 Auto-enabling Night Mode at 11 PM IST...")
+        
+        # Get all active orders
+        active_orders = await orders_collection.find({
+            "status": {"$in": ["confirmed", "processing"]},
+            "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]}
+        }).to_list(None)
+        
+        updated_count = 0
+        for order in active_orders:
+            # Enable night mode
+            await orders_collection.update_one(
+                {"_id": order["_id"]},
+                {
+                    "$set": {
+                        "night_mode_enabled": True,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            # Send notification to user
+            user_id = order.get("user_id")
+            try:
+                await bot.send_message(
+                    user_id,
+                    "🌙 <b>Night Mode Activated Automatically</b>\n\n"
+                    "⏰ Time: 11:00 PM IST\n"
+                    "📊 Your order speed has been reduced to 70% for the night.\n"
+                    "☀️ Day mode will be activated automatically at 7:00 AM IST.",
+                    parse_mode="HTML"
+                )
+                updated_count += 1
+            except Exception as e:
+                print(f"Failed to send night mode notification to user {user_id}: {e}")
+        
+        print(f"✅ Night Mode enabled for {updated_count} active orders")
+    except Exception as e:
+        print(f"❌ Error in enable_night_mode_auto: {e}")
+
+async def disable_night_mode_auto():
+    """Automatically disable night mode at 7 AM IST for all active orders"""
+    try:
+        print("☀️ Auto-disabling Night Mode at 7 AM IST...")
+        
+        # Get all active orders with night mode enabled
+        active_orders = await orders_collection.find({
+            "status": {"$in": ["confirmed", "processing"]},
+            "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
+            "night_mode_enabled": True
+        }).to_list(None)
+        
+        updated_count = 0
+        for order in active_orders:
+            # Disable night mode
+            await orders_collection.update_one(
+                {"_id": order["_id"]},
+                {
+                    "$set": {
+                        "night_mode_enabled": False,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            # Send notification to user
+            user_id = order.get("user_id")
+            try:
+                await bot.send_message(
+                    user_id,
+                    "☀️ <b>Day Mode Activated</b>\n\n"
+                    "⏰ Time: 7:00 AM IST\n"
+                    "📊 Your order speed has been restored to normal.\n"
+                    "🌙 Night mode will be activated automatically at 11:00 PM IST.",
+                    parse_mode="HTML"
+                )
+                updated_count += 1
+            except Exception as e:
+                print(f"Failed to send day mode notification to user {user_id}: {e}")
+        
+        print(f"✅ Day Mode enabled for {updated_count} active orders")
+    except Exception as e:
+        print(f"❌ Error in disable_night_mode_auto: {e}")
+
+def setup_night_mode_scheduler():
+    """Setup APScheduler for automatic night mode toggling"""
+    from datetime import timezone, timedelta as td
+    
+    scheduler = AsyncIOScheduler(timezone=timezone(td(hours=5, minutes=30)))  # IST timezone
+    
+    # Schedule night mode ON at 11:00 PM IST
+    scheduler.add_job(
+        enable_night_mode_auto,
+        CronTrigger(hour=23, minute=0),
+        id='night_mode_on',
+        name='Enable Night Mode at 11 PM IST',
+        replace_existing=True
+    )
+    
+    # Schedule night mode OFF at 7:00 AM IST
+    scheduler.add_job(
+        disable_night_mode_auto,
+        CronTrigger(hour=7, minute=0),
+        id='night_mode_off',
+        name='Disable Night Mode at 7 AM IST',
+        replace_existing=True
+    )
+    
+    scheduler.start()
+    print("✅ Night Mode Scheduler initialized (11 PM ON | 7 AM OFF IST)")
+    return scheduler
 
 
 async def main():
@@ -6996,7 +8249,7 @@ async def main():
         print("🔗 Starting ngrok tunnel...")
         try:
             ngrok.set_auth_token(NGROK_AUTH_TOKEN)
-            public_url = ngrok.connect(5000, "http").public_url
+            public_url = ngrok.connect(FLASK_PORT, "http").public_url
             print(f"✅ Ngrok Public URL: {public_url}")
             print(f"🔔 Webhook Endpoint: {public_url}/verify_payment")
         except Exception as e:
@@ -7032,6 +8285,10 @@ async def main():
         asyncio.create_task(task_process_manual_orders())
         asyncio.create_task(task_reset_daily_posts())
         asyncio.create_task(expire_due_orders())
+        
+        # Setup night mode automation scheduler
+        print("🌙 Setting up Night Mode automation...")
+        setup_night_mode_scheduler()
 
         print("✅ Bot started successfully!")
         print(f"👤 Admin ID: {ADMIN_ID}")
