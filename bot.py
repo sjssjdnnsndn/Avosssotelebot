@@ -1366,8 +1366,8 @@ async def active_orders_handler(message: types.Message):
     # Get active auto orders
     active_orders = await orders_collection.find({
         "user_id": user_id,
-        "status": {"$in": ["confirmed", "processing"]},
-        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]}
+        "status": {"$in": ["confirmed", "processing", "pending"]},
+        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers", "poll_votes"]}
     }).to_list(None)
 
     if not active_orders:
@@ -1405,9 +1405,12 @@ async def active_orders_handler(message: types.Message):
         if order["service_identifier"] == "views_by_followers":
             service_label = "Auto Follower Views"
             per_post = order.get("views_per_post", 0)
-        else:
+        elif order["service_identifier"] == "reactions_by_followers":
             service_label = "Auto Follower Reactions"
             per_post = order.get("reactions_per_post", 0)
+        else:
+            service_label = "Poll Votes"
+            per_post = order.get("quantity", 0)
 
         # Calculate delay with custom adjustment
         if speed_multiplier == 0.5:
@@ -2070,12 +2073,20 @@ async def process_confirmation(message: types.Message, state: FSMContext):
     if service_identifier == 'poll_votes':
         vote_mode = data.get('vote_mode', 'specific')
         poll_options = data.get('poll_options', [])
+        
+        # Look for invite link in the channel collection if it's not in data
+        invite_link = data.get('invite_link')
+        if not invite_link and data.get('channel_id'):
+            channel_doc = await channels_collection.find_one({"channel_id": data['channel_id']})
+            invite_link = channel_doc.get("invite_link") if channel_doc else None
+
         await orders_collection.update_one(
             {"_id": order_id},
             {"$set": {
                 "vote_mode": vote_mode,
                 "poll_options": poll_options,
-                "poll_options_count": len(poll_options)
+                "poll_options_count": len(poll_options),
+                "invite_link": invite_link
             }}
         )
 
@@ -6883,18 +6894,82 @@ async def process_manual_reactions(order, to_deliver):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return sum(1 for r in results if r is True)
 
+async def ensure_client_in_channel(client, channel_id):
+    """Ensure a client has joined a channel, handling private/public channels and invite links"""
+    try:
+        # Check if already a participant
+        try:
+            full_chat = await client(GetFullChatRequest(channel_id))
+            return True
+        except (UserNotParticipantError, ChannelPrivateError, ValueError):
+            pass
+
+        # Try to get entity to see if it's public
+        try:
+            entity = await client.get_entity(channel_id)
+            if hasattr(entity, 'username') and entity.username:
+                await client(JoinChannelRequest(entity))
+                print(f"✅ Joined public channel: {entity.username}")
+                return True
+        except Exception:
+            pass
+
+        # If it's private or we don't have entity, we need an invite link
+        # Look for invite link in the order or channel collection
+        order = await orders_collection.find_one({"channel_id": channel_id})
+        invite_link = order.get("invite_link") if order else None
+        
+        if not invite_link:
+            channel_doc = await channels_collection.find_one({"channel_id": channel_id})
+            invite_link = channel_doc.get("invite_link") if channel_doc else None
+
+        if invite_link:
+            try:
+                if "t.me/+" in invite_link or "t.me/joinchat/" in invite_link:
+                    hash = invite_link.split('/')[-1].replace('+', '')
+                    await client(ImportChatInviteRequest(hash))
+                else:
+                    await client(JoinChannelRequest(invite_link))
+                print(f"✅ Joined channel via invite link: {channel_id}")
+                return True
+            except UserAlreadyParticipantError:
+                return True
+            except Exception as e:
+                print(f"❌ Failed to join via invite link: {e}")
+        
+        return False
+    except Exception as e:
+        print(f"❌ Error in ensure_client_in_channel: {e}")
+        return False
+
 async def process_poll_votes(order, to_deliver):
-    tasks = []
-    poll_options_count = order.get('poll_options_count', 10)  # Default 10 options
+    success_count = 0
+    poll_options_count = order.get('poll_options_count', 10)
     option_index = order.get('option_index', 0)
+    channel_id = order['channel_id']
     
     for i in range(to_deliver):
         client = active_clients[i % len(active_clients)]
-        await ensure_client_in_channel(client, order['channel_id'])
-        tasks.append(process_vote_order(client, order['channel_id'], order['content_id'], option_index, poll_options_count))
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    return sum(1 for r in results if r is True)
+        if await ensure_client_in_channel(client, channel_id):
+            res = await process_vote_order(client, channel_id, order['content_id'], option_index, poll_options_count)
+            if res:
+                success_count += 1
+    
+    # Notify user on progress
+    if success_count > 0:
+        try:
+            user_id = order.get("user_id")
+            await bot.send_message(
+                user_id,
+                f"🗳️ <b>Vote Order Update</b>\n\n"
+                f"✅ Delivered: {success_count} votes to <b>{order.get('channel_title', 'Channel')}</b>\n"
+                f"📊 Status: Processing",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+        
+    return success_count
 
 
 async def task_process_manual_orders():
@@ -7153,12 +7228,18 @@ async def ub_moniter():
                     per_post_quantity = order.get("views_per_post", 10)
                     total_quantity = order.get("total_views", 0)
                     process_func = process_auto_views_master_worker
-                else:
+                elif order['service_identifier'] == "reactions_by_followers":
                     metric = "reactions"
                     update_field = "delivered_reactions"
                     per_post_quantity = order.get("reactions_per_post", 10)
                     total_quantity = order.get("total_reactions", 0)
                     process_func = process_auto_reactions_master_worker
+                else:  # poll_votes
+                    metric = "votes"
+                    update_field = "delivered_quantity"
+                    per_post_quantity = order.get("quantity", 10)
+                    total_quantity = order.get("quantity", 0)
+                    process_func = process_poll_votes
 
                 delivered = order.get(update_field, 0)
                 remaining = total_quantity - delivered
