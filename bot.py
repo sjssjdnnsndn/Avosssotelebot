@@ -61,7 +61,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAG0HiQYlK2GaoAOijqrj81bO6VA3vGfAWg")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAHGBCpg1PlEaw1Wu6GRh4Frg4eRPJ-Lf4M")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
@@ -96,6 +96,7 @@ sessions_collection = db.sessions
 active_clients = []
 user_oxapay_orders = {}
 public_url = None
+scheduler = None  # APScheduler for night/day mode notifications
 
 # Initialize Flask server for OxaPay webhook
 flask_app = Flask(__name__)
@@ -367,6 +368,63 @@ def is_night_hours():
 def get_night_mode_delay_multiplier():
     """Get the night mode divisor — delivery quantity is divided by 3 (≈70% slower)."""
     return 3
+
+# ===== NIGHT MODE NOTIFICATION FUNCTIONS (NEW FIX) ===== #
+async def send_night_mode_notification():
+    """Send notification when night mode starts (11 PM IST)"""
+    try:
+        message = (
+            "🌙 <b>Night Mode Activated</b>\n\n"
+            "⏰ Time: 11:00 PM IST\n"
+            "🐌 Order processing speed is now 70% slower\n"
+            "📊 All active orders will be completed at reduced speed\n\n"
+            "💤 Normal speed will resume at 7:00 AM IST"
+        )
+        await bot.send_message(ADMIN_ID, message, parse_mode="HTML")
+        print(f"[{datetime.now()}] ✅ Night mode notification sent")
+    except Exception as e:
+        print(f"❌ Error sending night mode notification: {e}")
+
+async def send_day_mode_notification():
+    """Send notification when day mode starts (7 AM IST)"""
+    try:
+        message = (
+            "☀️ <b>Day Mode Activated</b>\n\n"
+            "⏰ Time: 7:00 AM IST\n"
+            "🚀 Order processing speed is back to normal\n"
+            "📊 All active orders will be completed at full speed\n\n"
+            "✅ Have a productive day!"
+        )
+        await bot.send_message(ADMIN_ID, message, parse_mode="HTML")
+        print(f"[{datetime.now()}] ✅ Day mode notification sent")
+    except Exception as e:
+        print(f"❌ Error sending day mode notification: {e}")
+
+def setup_night_mode_scheduler():
+    """Setup APScheduler for night/day mode notifications"""
+    global scheduler
+    scheduler = AsyncIOScheduler()
+    
+    # Schedule night mode notification at 11 PM IST (17:30 UTC = 11 PM IST)
+    scheduler.add_job(
+        send_night_mode_notification,
+        CronTrigger(hour=17, minute=30, timezone='UTC'),
+        id='night_mode_notification',
+        replace_existing=True
+    )
+    
+    # Schedule day mode notification at 7 AM IST (1:30 UTC = 7 AM IST)
+    scheduler.add_job(
+        send_day_mode_notification,
+        CronTrigger(hour=1, minute=30, timezone='UTC'),
+        id='day_mode_notification',
+        replace_existing=True
+    )
+    
+    scheduler.start()
+    print("✅ Night mode scheduler started - Notifications at 11 PM and 7 AM IST")
+
+
 
 def calculate_delivery_time(quantity, delay_seconds, clients_count=1):
     """
@@ -1366,8 +1424,8 @@ async def active_orders_handler(message: types.Message):
     # Get active auto orders
     active_orders = await orders_collection.find({
         "user_id": user_id,
-        "status": {"$in": ["confirmed", "processing", "pending"]},
-        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers", "poll_votes"]}
+        "status": {"$in": ["confirmed", "processing"]},
+        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]}
     }).to_list(None)
 
     if not active_orders:
@@ -1405,15 +1463,9 @@ async def active_orders_handler(message: types.Message):
         if order["service_identifier"] == "views_by_followers":
             service_label = "Auto Follower Views"
             per_post = order.get("views_per_post", 0)
-        elif order["service_identifier"] == "reactions_by_followers":
+        else:
             service_label = "Auto Follower Reactions"
             per_post = order.get("reactions_per_post", 0)
-        elif order["service_identifier"] == "poll_votes":
-            service_label = "Poll Votes"
-            per_post = order.get("quantity", 0)
-        else:
-            service_label = "Manual Service"
-            per_post = order.get("quantity", 0)
 
         # Calculate delay with custom adjustment
         if speed_multiplier == 0.5:
@@ -1434,13 +1486,6 @@ async def active_orders_handler(message: types.Message):
 
         night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>" if night_mode else ""
 
-        if order["service_identifier"] == "views_by_followers":
-            metric_label = "Views per Post"
-        elif order["service_identifier"] == "reactions_by_followers":
-            metric_label = "Reactions per Post"
-        else:
-            metric_label = "Quantity"
-
         text = (
             f"📺 <b>Your Channels:</b>\n\n"
             f"<b>Channel Status :</b> 🟢 ON\n\n"
@@ -1448,17 +1493,15 @@ async def active_orders_handler(message: types.Message):
             f"🆔 <b>Channel ID:</b> {channel_id}\n"
             f"📛 <b>Channel Name:</b> {channel_title}\n"
             f"🔗 <b>Channel Username:</b> @{channel_title}\n"
-            f"👀 <b>{metric_label}:</b> {per_post}\n"
-            f"📝 <b>Posts per Day:</b> {order.get('posts_per_day', 0)}\n"
-            f"🔀 <b>Random Views:</b> {order.get('random_views', 0)}\n"
+            f"👀 <b>Views per Post:</b> {per_post}\n"
+            f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
+            f"🔀 <b>Random Views:</b> {random_views}\n"
             f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
             f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
             f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
             f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
             f"🌙 <b>Night Mode:</b> {night_str}"
-            f"{night_note}\n\n"
-            f"🗳️ <b>Auto Poll Votes:</b> {'✅ ON' if order.get('auto_poll_enabled') else '❌ OFF'}\n"
-            f"🔢 <b>Auto Poll Quantity:</b> {order.get('auto_poll_votes_quantity', 0)}"
+            f"{night_note}"
         )
 
         # Create control buttons
@@ -1630,14 +1673,31 @@ async def start_manual_reactions(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🗳️ Order Votes")
 async def start_votes_order(message: types.Message, state: FSMContext):
+    """Start vote ordering - Step 1: Select channel/group (FIXED WORKFLOW)"""
     await state.update_data(service_type="poll_votes")
-    await state.set_state(OrderStates.SELECTING_CHANNEL)
+    
+    # Similar workflow to views/reactions - first add channel
     await message.answer(
-        "🗳️ <b>Vote Order Service</b>\n\n"
-        "Please select a channel where the poll is located, or add a new one:",
-        reply_markup=get_channel_select_keyboard(),
-        parse_mode="HTML"
+        "🗳️ <b>Order Votes - Step 1</b>\n\n"
+        "📢 Select the channel or group where the poll is posted:\n\n"
+        "👇 Tap the button below to add channel/group",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(
+                    text="➕ Add Channel/Group",
+                    request_chat=KeyboardButtonRequestChat(
+                        request_id=3,
+                        chat_is_channel=False,
+                        bot_is_member=True
+                    )
+                )],
+                [KeyboardButton(text="⬅️ Cancel Order")]
+            ],
+            resize_keyboard=True
+        )
     )
+    await state.set_state(OrderStates.SELECTING_CHANNEL)
 
 @dp.message(OrderStates.waiting_for_content, F.media_group_id)
 async def handle_album(message: types.Message):
@@ -1706,60 +1766,12 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     user_id = message.from_user.id
-    
-    # If we are in poll_votes service, we expect the user to have selected a channel first
-    # and then forward the post from that channel.
-    if data.get('service_type') == 'poll_votes':
-        selected_channel_id = data.get('channel_id')
-        forwarded_channel_id = message.forward_from_chat.id
-        
-        if selected_channel_id and forwarded_channel_id != selected_channel_id:
-            await message.answer(
-                f"❌ This post is from a different channel!\n\n"
-                f"Please forward the poll from the channel you selected: <b>{data.get('channel_title')}</b>",
-                parse_mode="HTML"
-            )
-            return
-        
-        channel_id = forwarded_channel_id
-        channel_title = data.get('channel_title')
-    else:
-        channel_id = message.forward_from_chat.id
-        channel_title = message.forward_from_chat.title
+    channel_id = message.forward_from_chat.id
 
     try:
         # Get channel info using Telethon
         client = active_clients[0] if active_clients else None
         if not client:
-            await message.answer("❌ No active Telegram clients available. Please contact admin.")
-            return
-
-        try:
-            # Get channel entity with Telethon
-            entity = await client.get_entity(PeerChannel(channel_id))
-            channel_title = entity.title
-            is_public = hasattr(entity, 'username') and entity.username is not None
-
-            # Get more details if possible
-            try:
-                full_channel = await client(GetFullChannelRequest(channel=entity))
-                is_member = full_channel.full_chat.participants_count > 0
-            except:
-                is_member = True  # Assume member if we can't check
-
-            print(f"Telethon channel info: {channel_title}, public: {is_public}, member: {is_member}")
-
-        except Exception as e:
-            print(f"Error fetching channel info with Telethon: {e}")
-            # Fallback to aiogram
-            try:
-                channel_info = await bot.get_chat(channel_id)
-                channel_title = channel_info.title
-                is_public = hasattr(channel_info, 'username') and channel_info.username is not None
-            except Exception as e:
-                print(f"Error fetching channel info: {e}")
-                await message.answer("❌ Could not fetch channel information. Please try again.")
-                return
             await message.answer("❌ No active Telegram clients available. Please contact admin.")
             return
 
@@ -2131,20 +2143,12 @@ async def process_confirmation(message: types.Message, state: FSMContext):
     if service_identifier == 'poll_votes':
         vote_mode = data.get('vote_mode', 'specific')
         poll_options = data.get('poll_options', [])
-        
-        # Look for invite link in the channel collection if it's not in data
-        invite_link = data.get('invite_link')
-        if not invite_link and data.get('channel_id'):
-            channel_doc = await channels_collection.find_one({"channel_id": data['channel_id']})
-            invite_link = channel_doc.get("invite_link") if channel_doc else None
-
         await orders_collection.update_one(
             {"_id": order_id},
             {"$set": {
                 "vote_mode": vote_mode,
                 "poll_options": poll_options,
-                "poll_options_count": len(poll_options),
-                "invite_link": invite_link
+                "poll_options_count": len(poll_options)
             }}
         )
 
@@ -3264,95 +3268,33 @@ async def cancel_order_callback(callback: types.CallbackQuery, state: FSMContext
     # Optionally, you can send a message back to the user indicating cancellation
 
 @dp.message(OrderStates.SELECTING_CHANNEL)
-async def handle_channel_selection_order(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
+async def handle_channel_selection(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    
-    if message.text == "⬅️ Back":
+    channels = data.get('available_channels', [])
+    selected_title = message.text.replace("📢 ", "")
+
+    selected_channel = next((ch for ch in channels if ch['channel_title'] == selected_title), None)
+
+    if not selected_channel:
+        await message.answer("❌ Invalid channel selection. Please choose from the list.")
+        return
+
+    channel_id = selected_channel['channel_id']
+    channel_title = selected_channel['channel_title']
+
+    orders = await orders_collection.find({
+        "channel_id": channel_id,
+        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
+        "status": {"$in": ["confirmed", "processing"]}
+    }).sort("created_at", -1).to_list(None)
+
+    if not orders:
+        await message.answer(
+            f"ℹ️ No auto orders found for channel: {channel_title}",
+            reply_markup=get_main_menu_keyboard()
+        )
         await state.clear()
-        await message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
         return
-
-    if message.text == "📢 My Channels":
-        channels = await get_user_channels(user_id)
-        if not channels:
-            await message.answer("You haven't added any channels yet.")
-            return
-        await message.answer("Select a channel:", reply_markup=get_my_channels_keyboard(channels))
-        return
-
-    channel_id = None
-    channel_title = None
-    invite_link = None
-    is_public = True
-
-    if message.text.startswith("📢 "):
-        title = message.text[2:]
-        channels = await get_user_channels(user_id)
-        selected = next((c for c in channels if c['channel_title'] == title), None)
-        if selected:
-            channel_id = selected['channel_id']
-            channel_title = selected['channel_title']
-            invite_link = selected.get('invite_link')
-            is_public = selected.get('is_public', True)
-
-    if not channel_id:
-        # Check for request_chat handled by other events
-        return
-
-    await state.update_data(
-        channel_id=channel_id,
-        channel_title=channel_title,
-        invite_link=invite_link,
-        is_public=is_public
-    )
-
-    if not is_public and not invite_link:
-        await state.set_state(OrderStates.WAITING_FOR_INVITE_LINK)
-        await message.answer(
-            f"🔒 <b>{channel_title}</b> is a private channel.\n\n"
-            "Please provide an invite link so our accounts can join and vote:",
-            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Back")]], resize_keyboard=True),
-            parse_mode="HTML"
-        )
-    else:
-        await state.set_state(OrderStates.waiting_for_content)
-        await message.answer(
-            f"✅ Channel Selected: <b>{channel_title}</b>\n\n"
-            "📨 Now, please <b>forward the poll post</b> from this channel that you want to boost:",
-            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]], resize_keyboard=True),
-            parse_mode="HTML"
-        )
-
-@dp.message(OrderStates.WAITING_FOR_INVITE_LINK)
-async def handle_invite_link_input(message: types.Message, state: FSMContext):
-    if message.text == "⬅️ Back":
-        await state.set_state(OrderStates.SELECTING_CHANNEL)
-        await message.answer("Please select a channel:", reply_markup=get_channel_select_keyboard())
-        return
-
-    invite_link = message.text
-    if "t.me/" not in invite_link:
-        await message.answer("❌ Invalid invite link. Please send a valid Telegram invite link.")
-        return
-
-    data = await state.get_data()
-    channel_id = data.get('channel_id')
-    
-    await state.update_data(invite_link=invite_link)
-    if channel_id:
-        await channels_collection.update_one(
-            {"channel_id": channel_id},
-            {"$set": {"invite_link": invite_link}}
-        )
-
-    await state.set_state(OrderStates.waiting_for_content)
-    await message.answer(
-        "✅ Invite link saved.\n\n"
-        "📨 Now, please <b>forward the poll post</b> from this channel that you want to boost:",
-        reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]], resize_keyboard=True),
-        parse_mode="HTML"
-    )
 
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     now = datetime.utcnow()
@@ -3849,6 +3791,93 @@ async def reaction_follower_handler(message: types.Message, state: FSMContext):
         reply_markup=get_channel_select_keyboard()
     )
 
+
+# ===== VOTE ORDERING - CHANNEL SELECTION HANDLER (NEW FIX) ===== #
+@dp.message(OrderStates.SELECTING_CHANNEL, F.chat_shared)
+async def handle_vote_channel_selection(message: types.Message, state: FSMContext):
+    """Handle channel selection specifically for vote ordering (FIXED WORKFLOW)"""
+    data = await state.get_data()
+    service_type = data.get('service_type')
+    
+    # Only handle if this is for votes
+    if service_type != 'poll_votes':
+        # For other services, let default handler take care
+        await handle_channel_shared(message, state)
+        return
+    
+    chat_id = message.chat_shared.chat_id
+    user_id = message.from_user.id
+    
+    try:
+        # Get channel info using first active client
+        client = active_clients[0] if active_clients else None
+        if not client:
+            await message.answer("❌ No active Telegram clients available. Please contact admin.")
+            return
+        
+        try:
+            entity = await client.get_entity(PeerChannel(chat_id))
+            channel_title = entity.title
+            is_public = hasattr(entity, 'username') and entity.username is not None
+            
+            # Try to get full channel info
+            try:
+                full_channel = await client(GetFullChannelRequest(channel=entity))
+                print(f"Vote channel selected: {channel_title}, Public: {is_public}")
+            except:
+                pass
+            
+            # Save channel info
+            await state.update_data(
+                channel_id=chat_id,
+                channel_title=channel_title,
+                is_public_channel=is_public
+            )
+            
+            # If private channel, ask for invite link so workers can join
+            if not is_public:
+                await message.answer(
+                    f"✅ Channel selected: <b>{channel_title}</b>\n\n"
+                    "🔒 This is a private channel/group.\n\n"
+                    "📎 <b>Step 2: Send Invite Link</b>\n"
+                    "Please send the invite link so worker accounts can join and vote:\n\n"
+                    "Example: <code>https://t.me/+xxxxxxxxxxx</code>",
+                    parse_mode="HTML",
+                    reply_markup=ReplyKeyboardMarkup(
+                        keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+                        resize_keyboard=True
+                    )
+                )
+                await state.set_state(OrderStates.WAITING_FOR_INVITE_LINK)
+            else:
+                # Public channel - proceed to poll forwarding
+                await message.answer(
+                    f"✅ Channel selected: <b>{channel_title}</b>\n\n"
+                    "📨 <b>Step 2: Forward Vote Post</b>\n"
+                    "Please forward the specific poll/vote post from this channel\n"
+                    "that you want to boost.\n\n"
+                    "Or press '⬅️ Cancel Order' to go back",
+                    parse_mode="HTML",
+                    reply_markup=ReplyKeyboardMarkup(
+                        keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+                        resize_keyboard=True
+                    )
+                )
+                await state.set_state(OrderStates.waiting_for_content)
+                
+        except Exception as e:
+            print(f"Error getting channel info: {e}")
+            await message.answer(
+                "❌ Could not access channel information.\n"
+                "Please make sure the bot is added as admin in the channel."
+            )
+            return
+            
+    except Exception as e:
+        print(f"Error in vote channel selection: {e}")
+        await message.answer("❌ An error occurred. Please try again.")
+
+
 @dp.message(F.chat_shared)
 async def handle_channel_shared(message: types.Message, state: FSMContext):
     chat = message.chat_shared
@@ -3878,7 +3907,69 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
         return
 
     link = message.text.strip()
+    data = await state.get_data()
+    service_type = data.get('service_type')
     
+    # ===== VOTE-SPECIFIC HANDLING (NEW FIX) ===== #
+    if service_type == 'poll_votes':
+        # For votes, we need private invite links only
+        # Validate that it's a private invite link
+        if not (link.startswith('https://t.me/+') or link.startswith('https://t.me/joinchat/')):
+            await message.answer(
+                "❌ Invalid invite link format.\n\n"
+                "For private channels, please send the invite link:\n"
+                "Example: <code>https://t.me/+xxxxxxxxxxx</code>",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Save invite link
+        await state.update_data(invite_link=link)
+        
+        # Have workers join the channel
+        await message.answer(
+            "⏳ Adding worker accounts to the channel...\n"
+            "This may take a few moments.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        # Join channel with all active clients
+        joined_count = 0
+        for client in active_clients:
+            try:
+                # Extract invite hash from link
+                invite_hash = link.split('/')[-1].replace('+', '')
+                await client(ImportChatInviteRequest(invite_hash))
+                joined_count += 1
+                await asyncio.sleep(random.uniform(2, 4))  # Delay between joins
+            except UserAlreadyParticipantError:
+                joined_count += 1  # Already in channel
+            except Exception as e:
+                print(f"Error joining channel with client: {e}")
+        
+        if joined_count > 0:
+            await message.answer(
+                f"✅ {joined_count} worker account(s) joined the channel\n\n"
+                "📨 <b>Step 3: Forward Vote Post</b>\n"
+                "Now please forward the specific poll/vote post from this channel\n"
+                "that you want to boost.",
+                parse_mode="HTML",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+                    resize_keyboard=True
+                )
+            )
+            await state.set_state(OrderStates.waiting_for_content)
+            return
+        else:
+            await message.answer(
+                "❌ Could not join the channel. Please check the invite link and try again.",
+                reply_markup=get_main_menu_keyboard()
+            )
+            await state.clear()
+            return
+    
+    # ===== EXISTING LOGIC FOR OTHER SERVICES ===== #
     # ✅ Accept multiple formats: @username, username, t.me/username, telegram.me/username
     # Normalize the input
     if link.startswith('@'):
@@ -3901,7 +3992,6 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
         )
         return
 
-    data = await state.get_data()
     user_id = message.from_user.id
     shared_chat_id = data.get('channel_id')
 
@@ -7014,97 +7104,18 @@ async def process_manual_reactions(order, to_deliver):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return sum(1 for r in results if r is True)
 
-async def ensure_client_in_channel(client, channel_id):
-    """Ensure a client has joined a channel, handling private/public channels and invite links"""
-    try:
-        # Check if already a participant
-        try:
-            # For Telethon, GetFullChannelRequest is more reliable for checking membership
-            await client(GetFullChannelRequest(channel_id))
-            return True
-        except (UserNotParticipantError, ChannelPrivateError, ValueError, ChannelInvalidError):
-            pass
-
-        # Try to get entity to see if it's public
-        entity = None
-        try:
-            entity = await client.get_entity(channel_id)
-            if hasattr(entity, 'username') and entity.username:
-                await client(JoinChannelRequest(entity))
-                print(f"✅ Joined public channel: {entity.username}")
-                return True
-        except Exception:
-            pass
-
-        # If it's private or we don't have entity, we need an invite link
-        invite_link = None
-        
-        # Try finding invite link in the order or channel collection
-        # Check orders first (most specific)
-        order = await orders_collection.find_one({"channel_id": channel_id})
-        if order:
-            invite_link = order.get("invite_link")
-            
-        if not invite_link:
-            channel_doc = await channels_collection.find_one({"channel_id": channel_id})
-            if channel_doc:
-                invite_link = channel_doc.get("invite_link")
-
-        # Check if the bot was provided an invite link during the flow
-        if not invite_link:
-            user_id = order.get("user_id") if order else None
-            if user_id and user_id in user_configs:
-                invite_link = user_configs[user_id].invite_link
-
-        if invite_link:
-            try:
-                print(f"🔗 Attempting to join via link: {invite_link}")
-                if "t.me/+" in invite_link or "t.me/joinchat/" in invite_link:
-                    link_hash = invite_link.split('/')[-1].replace('+', '')
-                    await client(ImportChatInviteRequest(link_hash))
-                else:
-                    await client(JoinChannelRequest(invite_link))
-                print(f"✅ Joined channel via invite link: {channel_id}")
-                return True
-            except (UserAlreadyParticipantError, ChatInviteAlready):
-                return True
-            except Exception as e:
-                print(f"❌ Failed to join via invite link: {e}")
-        
-        print(f"⚠️ Could not join channel {channel_id}: No invite link found or join failed")
-        return False
-    except Exception as e:
-        print(f"❌ Error in ensure_client_in_channel: {e}")
-        return False
-
 async def process_poll_votes(order, to_deliver):
-    success_count = 0
-    poll_options_count = order.get('poll_options_count', 10)
+    tasks = []
+    poll_options_count = order.get('poll_options_count', 10)  # Default 10 options
     option_index = order.get('option_index', 0)
-    channel_id = order['channel_id']
     
     for i in range(to_deliver):
         client = active_clients[i % len(active_clients)]
-        if await ensure_client_in_channel(client, channel_id):
-            res = await process_vote_order(client, channel_id, order['content_id'], option_index, poll_options_count)
-            if res:
-                success_count += 1
-    
-    # Notify user on progress
-    if success_count > 0:
-        try:
-            user_id = order.get("user_id")
-            await bot.send_message(
-                user_id,
-                f"🗳️ <b>Vote Order Update</b>\n\n"
-                f"✅ Delivered: {success_count} votes to <b>{order.get('channel_title', 'Channel')}</b>\n"
-                f"📊 Status: Processing",
-                parse_mode="HTML"
-            )
-        except:
-            pass
-        
-    return success_count
+        await ensure_client_in_channel(client, order['channel_id'])
+        tasks.append(process_vote_order(client, order['channel_id'], order['content_id'], option_index, poll_options_count))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return sum(1 for r in results if r is True)
 
 
 async def task_process_manual_orders():
@@ -7136,8 +7147,16 @@ async def task_process_manual_orders():
                     )
                     continue
 
-                # Calculate how many to deliver in this batch
-                to_deliver = min(remaining, len(active_clients))
+                # ===== NIGHT MODE ADJUSTMENT (NEW FIX) ===== #
+                # Check if it's night hours and adjust delivery quantity
+                if is_night_hours():
+                    # Reduce delivery speed by 70% (divide by 3)
+                    night_divisor = get_night_mode_delay_multiplier()
+                    to_deliver = min(remaining, max(1, len(active_clients) // night_divisor))
+                    print(f"🌙 Night mode active - Reduced delivery: {to_deliver} (was {len(active_clients)})")
+                else:
+                    # Normal daytime delivery
+                    to_deliver = min(remaining, len(active_clients))
 
                 # Process the batch
                 if order['service_identifier'] == "manual_views":
@@ -7363,18 +7382,12 @@ async def ub_moniter():
                     per_post_quantity = order.get("views_per_post", 10)
                     total_quantity = order.get("total_views", 0)
                     process_func = process_auto_views_master_worker
-                elif order['service_identifier'] == "reactions_by_followers":
+                else:
                     metric = "reactions"
                     update_field = "delivered_reactions"
                     per_post_quantity = order.get("reactions_per_post", 10)
                     total_quantity = order.get("total_reactions", 0)
                     process_func = process_auto_reactions_master_worker
-                else:  # poll_votes
-                    metric = "votes"
-                    update_field = "delivered_quantity"
-                    per_post_quantity = order.get("quantity", 10)
-                    total_quantity = order.get("quantity", 0)
-                    process_func = process_poll_votes
 
                 delivered = order.get(update_field, 0)
                 remaining = total_quantity - delivered
