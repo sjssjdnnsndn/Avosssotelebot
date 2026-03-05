@@ -1676,22 +1676,32 @@ async def start_votes_order(message: types.Message, state: FSMContext):
     """Start vote ordering - Step 1: Select channel/group (FIXED WORKFLOW)"""
     await state.update_data(service_type="poll_votes")
     
-    # Similar workflow to views/reactions - first add channel
+    # Improved workflow: Allow both channels and groups
     await message.answer(
         "🗳️ <b>Order Votes - Step 1</b>\n\n"
         "📢 Select the channel or group where the poll is posted:\n\n"
-        "👇 Tap the button below to add channel/group",
+        "👇 Tap a button below to share the chat",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[
-                [KeyboardButton(
-                    text="➕ Add Channel/Group",
-                    request_chat=KeyboardButtonRequestChat(
-                        request_id=3,
-                        chat_is_channel=False,
-                        bot_is_member=True
+                [
+                    KeyboardButton(
+                        text="➕ Share Channel",
+                        request_chat=KeyboardButtonRequestChat(
+                            request_id=3,
+                            chat_is_channel=True,
+                            bot_is_member=True
+                        )
+                    ),
+                    KeyboardButton(
+                        text="➕ Share Group",
+                        request_chat=KeyboardButtonRequestChat(
+                            request_id=4,
+                            chat_is_channel=False,
+                            bot_is_member=True
+                        )
                     )
-                )],
+                ],
                 [KeyboardButton(text="⬅️ Cancel Order")]
             ],
             resize_keyboard=True
@@ -2143,14 +2153,21 @@ async def process_confirmation(message: types.Message, state: FSMContext):
     if service_identifier == 'poll_votes':
         vote_mode = data.get('vote_mode', 'specific')
         poll_options = data.get('poll_options', [])
+        invite_link = data.get('invite_link')
+        
         await orders_collection.update_one(
             {"_id": order_id},
             {"$set": {
                 "vote_mode": vote_mode,
                 "poll_options": poll_options,
-                "poll_options_count": len(poll_options)
+                "poll_options_count": len(poll_options),
+                "invite_link": invite_link
             }}
         )
+        
+        # New: Join channel with workers only after payment/confirmation
+        if invite_link and active_clients:
+            asyncio.create_task(join_all_clients_to_channel(data.get('channel_id'), invite_link))
 
     await update_user_balance(user_id, -charge)
 
@@ -3926,48 +3943,20 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
         # Save invite link
         await state.update_data(invite_link=link)
         
-        # Have workers join the channel
+        # Proceed to poll forwarding first (DON'T JOIN YET)
         await message.answer(
-            "⏳ Adding worker accounts to the channel...\n"
-            "This may take a few moments.",
-            reply_markup=ReplyKeyboardRemove()
+            "✅ Invite link saved.\n\n"
+            "📨 <b>Step 3: Forward Vote Post</b>\n"
+            "Now please forward the specific poll/vote post from this channel\n"
+            "that you want to boost.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+                resize_keyboard=True
+            )
         )
-        
-        # Join channel with all active clients
-        joined_count = 0
-        for client in active_clients:
-            try:
-                # Extract invite hash from link
-                invite_hash = link.split('/')[-1].replace('+', '')
-                await client(ImportChatInviteRequest(invite_hash))
-                joined_count += 1
-                await asyncio.sleep(random.uniform(2, 4))  # Delay between joins
-            except UserAlreadyParticipantError:
-                joined_count += 1  # Already in channel
-            except Exception as e:
-                print(f"Error joining channel with client: {e}")
-        
-        if joined_count > 0:
-            await message.answer(
-                f"✅ {joined_count} worker account(s) joined the channel\n\n"
-                "📨 <b>Step 3: Forward Vote Post</b>\n"
-                "Now please forward the specific poll/vote post from this channel\n"
-                "that you want to boost.",
-                parse_mode="HTML",
-                reply_markup=ReplyKeyboardMarkup(
-                    keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
-                    resize_keyboard=True
-                )
-            )
-            await state.set_state(OrderStates.waiting_for_content)
-            return
-        else:
-            await message.answer(
-                "❌ Could not join the channel. Please check the invite link and try again.",
-                reply_markup=get_main_menu_keyboard()
-            )
-            await state.clear()
-            return
+        await state.set_state(OrderStates.waiting_for_content)
+        return
     
     # ===== EXISTING LOGIC FOR OTHER SERVICES ===== #
     # ✅ Accept multiple formats: @username, username, t.me/username, telegram.me/username
@@ -7104,6 +7093,41 @@ async def process_manual_reactions(order, to_deliver):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return sum(1 for r in results if r is True)
 
+async def process_poll_votes_master_worker(order, to_deliver):
+    """Distributed Vote Delivery - matches views/reactions pattern with delays"""
+    try:
+        channel_id = order['channel_id']
+        message_id = order['content_id']
+        option_index = order.get('option_index', 0)
+        poll_options_count = order.get('poll_options_count', 10)
+        
+        # Use random delay between 10-15s per worker
+        delay_seconds = random.uniform(10, 15)
+        
+        print(f"🗳️ Distributing {to_deliver} votes across {len(active_clients)} clients with ~{delay_seconds}s delay")
+        
+        tasks = []
+        for i in range(to_deliver):
+            client = active_clients[i % len(active_clients)]
+            
+            # Ensure client is in channel
+            if not await ensure_client_in_channel(client, channel_id):
+                continue
+                
+            tasks.append(delayed_vote_order(client, channel_id, message_id, option_index, poll_options_count, delay_seconds * i))
+            
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        success_count = sum(1 for r in results if r is True)
+        return success_count
+    except Exception as e:
+        print(f"❌ Vote processing failed: {e}")
+        return 0
+
+async def delayed_vote_order(client, channel_id, message_id, option_index, poll_options_count, delay):
+    await asyncio.sleep(delay)
+    return await process_vote_order(client, channel_id, message_id, option_index, poll_options_count)
+
+
 async def process_poll_votes(order, to_deliver):
     tasks = []
     poll_options_count = order.get('poll_options_count', 10)  # Default 10 options
@@ -7172,7 +7196,8 @@ async def task_process_manual_orders():
                         {"$inc": {"delivered_reactions": success_count}}
                     )
                 else:  # poll_votes
-                    success_count = await process_poll_votes(order, to_deliver)
+                    # Use the master-worker pattern with delays for votes too
+                    success_count = await process_poll_votes_master_worker(order, to_deliver)
                     await orders_collection.update_one(
                         {"_id": order['_id']},
                         {"$inc": {"delivered_quantity": success_count}}
