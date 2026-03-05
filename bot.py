@@ -1872,16 +1872,14 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
                                 target_message_id = forwarded.message_id
                         except Exception as forward_err:
                             print(f"Forwarding failed: {forward_err}")
-                            # If forwarding fails (private channel), we can't do much if it's not already a poll object
                 
                 if not target_poll:
-                    await message.answer("❌ This message doesn't contain a poll or is from a restricted private channel.")
+                    await message.answer("❌ This message doesn't contain a poll. Please forward the specific poll message.")
                     return
 
                 poll_options = [opt.text for opt in target_poll.options]
 
                 await state.update_data(
-                    channel_id=target_chat_id,
                     poll_id=target_poll.id,
                     poll_question=target_poll.question,
                     poll_options=poll_options,
@@ -1895,8 +1893,9 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
                 builder.row(KeyboardButton(text="⬅️ Cancel Order"))
 
                 await message.answer(
-                    f"🗳️ Selected: <b>{target_poll.question[:50]}</b>\n"
-                    "👉 Which option do you want to boost?",
+                    f"🗳️ Selected Poll: <b>{target_poll.question}</b>\n\n"
+                    "👉 <b>Step 4: Select Option</b>\n"
+                    "Which option do you want to boost?",
                     reply_markup=builder.as_markup(resize_keyboard=True),
                     parse_mode="HTML"
                 )
@@ -1904,7 +1903,7 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
 
             except Exception as e:
                 print(f"Error in poll handler: {e}")
-                await message.answer("❌ Failed to process poll. Please ensure it's a public poll or send it directly.")
+                await message.answer("❌ Failed to process poll. Please ensure you forwarded the correct poll message.")
 
 
     except Exception as e:
@@ -2080,33 +2079,51 @@ async def process_quantity(message: types.Message, state: FSMContext):
     elif data['service_type'] == 'poll_votes':
         charge = quantity * pricing['poll_votes']
 
+    # Check balance before confirmation
+    user_id = message.from_user.id
+    user = await users_collection.find_one({"user_id": user_id})
+    if user.get('balance', 0) < charge:
+        await message.answer(
+            f"❌ Insufficient balance to place this order.\n"
+            f"💰 Required: ${charge:.4f}\n"
+            f"👤 Your Balance: ${user.get('balance', 0):.4f}\n\n"
+            f"Please add funds to your account.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        await state.clear()
+        return
+
     await state.update_data(charge=charge)
 
     if data['service_type'] == 'manual_reactions':
         response = (
-            f"✅ Do You Want To Place Reaction Order!\n\n"
-            f"{data.get('reaction_emoji', '❤️')} {quantity} reactions\n"
-            f"📌 Channel: {data['channel_title']}\n"
-            f"🔄 Charges: ${charge:.4f}"
+            f"✅ <b>Reaction Order Confirmation</b>\n\n"
+            f"🎉 <b>Quantity:</b> <code>{quantity} {data.get('reaction_emoji', '❤️')}</code>\n"
+            f"📌 <b>Channel:</b> <i>{data['channel_title']}</i>\n"
+            f"💵 <b>Total Cost:</b> <code>${charge:.4f}</code>\n\n"
+            f"Confirm this order?"
         )
     elif data['service_type'] == 'manual_views':
         response = (
-            f"✅ Do You Want To Place View Order!\n\n"
-            f"👀 {quantity} views\n"
-            f"📌 Channel: {data['channel_title']}\n"
-            f"🔄 Charges: ${charge:.4f}"
+            f"✅ <b>View Order Confirmation</b>\n\n"
+            f"👁️ <b>Quantity:</b> <code>{quantity} views</code>\n"
+            f"📌 <b>Channel:</b> <i>{data['channel_title']}</i>\n"
+            f"💵 <b>Total Cost:</b> <code>${charge:.4f}</code>\n\n"
+            f"Confirm this order?"
         )
-    else:  # votes
+    else:  # poll_votes
         response = (
-            f"✅ Do You Want To Place Vote Order!\n\n"
-            f"🗳️ {quantity} votes\n"
-            f"📌 Poll: {data['poll_question'][:30]}...\n"
-            f"👉 Selected Option: {data.get('selected_option', '')}\n"
-            f"🔄 Charges: ${charge:.4f}"
+            f"🗳️ <b>Vote Order Confirmation</b>\n\n"
+            f"📌 <b>Poll:</b> <i>{data['poll_question'][:50]}...</i>\n"
+            f"👉 <b>Option:</b> <code>{data.get('selected_option', '')}</code>\n"
+            f"🗳️ <b>Votes:</b> <code>{quantity}</code>\n"
+            f"💵 <b>Total Cost:</b> <code>${charge:.4f}</code> ({await usd_to_inr_converter(charge)})\n\n"
+            f"Do you want to confirm this order?"
         )
 
     await message.answer(
         response,
+        parse_mode="HTML",
         reply_markup=get_confirmation_keyboard()
     )
 
