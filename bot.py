@@ -544,14 +544,14 @@ async def load_all_clients_from_files():
     
     import glob
     # Create sessions directory if it doesn't exist
-    sessions_dir = "/app/backend/sessions"
+    sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
     os.makedirs(sessions_dir, exist_ok=True)
     
     session_files = glob.glob(f"{sessions_dir}/*.session")
     
     if not session_files:
-        print("⚠️ No .session files found in /app/backend/sessions/")
-        print("💡 Place your .session files in /app/backend/sessions/ directory")
+        print(f"⚠️ No .session files found in {sessions_dir}")
+        print(f"💡 Place your .session files in {sessions_dir} directory")
         print("="*50 + "\n")
         return
     
@@ -5913,11 +5913,11 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             
             try:
                 # Ensure sessions directory exists
-                sessions_dir = "/app/backend/sessions"
+                sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
                 os.makedirs(sessions_dir, exist_ok=True)
                 
                 # Copy session file to sessions directory
-                dest_path = f"{sessions_dir}/{session_name}.session"
+                dest_path = os.path.join(sessions_dir, f"{session_name}.session")
                 shutil.copy2(session_file, dest_path)
                 
                 # Create client from file
@@ -9237,8 +9237,10 @@ async def main():
             print("✅ All clients are now monitoring channels")
         else:
             print("⚠️ No active Telegram clients found.")
-            print("📁 Place .session files in /app/backend/sessions/ directory")
-            print("   OR add accounts via /admin -> Telegram Accounts")
+
+        sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+        print(f"📁 Place .session files in {sessions_dir} directory")
+        print("   OR add accounts via /admin -> Telegram Accounts")
 
         print("⚙️ Starting background tasks...")
         asyncio.create_task(task_process_manual_orders())
