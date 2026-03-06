@@ -61,7 +61,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAHGBCpg1PlEaw1Wu6GRh4Frg4eRPJ-Lf4M")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAFPpcd3QshqvsFRBRf6oGvRVm7dfartf0Q")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
@@ -543,7 +543,11 @@ async def load_all_clients_from_files():
     print("="*50)
     
     import glob
-    session_files = glob.glob("/app/backend/sessions/*.session")
+    # Create sessions directory if it doesn't exist
+    sessions_dir = "/app/backend/sessions"
+    os.makedirs(sessions_dir, exist_ok=True)
+    
+    session_files = glob.glob(f"{sessions_dir}/*.session")
     
     if not session_files:
         print("⚠️ No .session files found in /app/backend/sessions/")
@@ -809,23 +813,41 @@ async def process_vote_order(client, channel_id, message_id, option_index, poll_
         channel_entity = await client.get_entity(PeerChannel(channel_id))
         input_channel = InputPeerChannel(channel_entity.id, channel_entity.access_hash)
 
+        # First, fetch the actual poll message to get correct option data
+        messages = await client.get_messages(channel_entity, ids=message_id)
+        if not messages or not messages.media or not hasattr(messages.media, 'poll'):
+            print(f"Error: Message {message_id} doesn't contain a valid poll")
+            return False
+        
+        poll = messages.media.poll
+        poll_results = messages.media.results
+        
         # Handle random vote selection
-        if option_index == "random" and poll_options_count:
-            # Randomly select an option from available options
-            option_index = random.randint(0, poll_options_count - 1)
-        elif option_index == "random":
-            # If no count provided, default to random between 0-9 (most polls have <10 options)
-            option_index = random.randint(0, 9)
-
-        # Create the vote request
+        if option_index == "random":
+            if poll_options_count:
+                option_index = random.randint(0, poll_options_count - 1)
+            else:
+                option_index = random.randint(0, len(poll.answers) - 1)
+        
+        # Validate option index
+        if option_index >= len(poll.answers):
+            print(f"Error: Invalid option index {option_index}, poll has {len(poll.answers)} options")
+            return False
+        
+        # Get the correct option bytes from the poll
+        selected_option = poll.answers[option_index].option
+        
+        # Create the vote request with correct option format
         await client(functions.messages.SendVoteRequest(
             peer=input_channel,
             msg_id=message_id,
-            options=[bytes([option_index])]  # Correct format: list of bytes
+            options=[selected_option]  # Use actual option bytes from poll
         ))
         return True
     except Exception as e:
         print(f"Error sending vote: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -1263,6 +1285,14 @@ class AdminStates(StatesGroup):
     SELECTING_ADMIN_FOR_POWERS = State()
     MANAGING_SPECIFIC_ADMIN_POWERS = State()
 
+class VoteOrderStates(StatesGroup):
+    WAITING_FOR_CHANNEL = State()
+    WAITING_FOR_INVITE_LINK = State()
+    WAITING_FOR_POST_FORWARD = State()
+    WAITING_FOR_OPTION_SELECTION = State()
+    WAITING_FOR_QUANTITY = State()
+    WAITING_FOR_CONFIRMATION = State()
+
 # ===== CONFIGURATION CLASS ===== #
 class ConfigData:
     def __init__(self):
@@ -1421,11 +1451,11 @@ def get_reaction_config_markup(config: ConfigData):
 async def active_orders_handler(message: types.Message):
     user_id = message.from_user.id
 
-    # Get active auto orders
+    # Get active auto orders (views, reactions, and poll votes)
     active_orders = await orders_collection.find({
         "user_id": user_id,
         "status": {"$in": ["confirmed", "processing"]},
-        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]}
+        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers", "poll_votes"]}
     }).to_list(None)
 
     if not active_orders:
@@ -1463,9 +1493,15 @@ async def active_orders_handler(message: types.Message):
         if order["service_identifier"] == "views_by_followers":
             service_label = "Auto Follower Views"
             per_post = order.get("views_per_post", 0)
-        else:
+        elif order["service_identifier"] == "reactions_by_followers":
             service_label = "Auto Follower Reactions"
             per_post = order.get("reactions_per_post", 0)
+        elif order["service_identifier"] == "poll_votes":
+            service_label = "Poll Votes"
+            per_post = 0  # Poll votes don't have per_post
+        else:
+            service_label = "Unknown Service"
+            per_post = 0
 
         # Calculate delay with custom adjustment
         if speed_multiplier == 0.5:
@@ -1486,54 +1522,87 @@ async def active_orders_handler(message: types.Message):
 
         night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>" if night_mode else ""
 
-        text = (
-            f"📺 <b>Your Channels:</b>\n\n"
-            f"<b>Channel Status :</b> 🟢 ON\n\n"
-            f"🟢 <b>Active Session:</b> {user_id}\n"
-            f"🆔 <b>Channel ID:</b> {channel_id}\n"
-            f"📛 <b>Channel Name:</b> {channel_title}\n"
-            f"🔗 <b>Channel Username:</b> @{channel_title}\n"
-            f"👀 <b>Views per Post:</b> {per_post}\n"
-            f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
-            f"🔀 <b>Random Views:</b> {random_views}\n"
-            f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
-            f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
-            f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
-            f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
-            f"🌙 <b>Night Mode:</b> {night_str}"
-            f"{night_note}"
-        )
+        # Different text format for poll votes
+        if order["service_identifier"] == "poll_votes":
+            quantity = order.get("quantity", 0)
+            delivered = order.get("delivered_votes", 0)
+            remaining = max(0, quantity - delivered)
+            poll_question = order.get("poll_question", "N/A")
+            option_text = order.get("option_text", "N/A")
+            
+            status_emoji = "🟢" if order["status"] == "processing" else "🟡"
+            status_text = "Active" if order["status"] == "processing" else "Confirmed"
+            
+            text = (
+                f"🗳️ <b>Poll Vote Order</b>\n\n"
+                f"{status_emoji} <b>Status:</b> {status_text}\n"
+                f"📛 <b>Channel/Group:</b> {channel_title}\n"
+                f"🆔 <b>Channel ID:</b> {channel_id}\n\n"
+                f"❓ <b>Poll Question:</b> {html_escape(poll_question[:100])}\n"
+                f"✅ <b>Selected Option:</b> {html_escape(option_text[:50])}\n\n"
+                f"📊 <b>Total Votes:</b> {quantity}\n"
+                f"✅ <b>Delivered:</b> {delivered}\n"
+                f"⏳ <b>Remaining:</b> {remaining}\n"
+                f"💵 <b>Cost:</b> ${charge:.4f}\n"
+            )
+            
+            # Simplified buttons for poll votes
+            builder = InlineKeyboardBuilder()
+            builder.row(
+                InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}")
+            )
+            builder.row(
+                InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu")
+            )
+        else:
+            text = (
+                f"📺 <b>Your Channels:</b>\n\n"
+                f"<b>Channel Status :</b> 🟢 ON\n\n"
+                f"🟢 <b>Active Session:</b> {user_id}\n"
+                f"🆔 <b>Channel ID:</b> {channel_id}\n"
+                f"📛 <b>Channel Name:</b> {channel_title}\n"
+                f"🔗 <b>Channel Username:</b> @{channel_title}\n"
+                f"👀 <b>Views per Post:</b> {per_post}\n"
+                f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
+                f"🔀 <b>Random Views:</b> {random_views}\n"
+                f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
+                f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
+                f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
+                f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
+                f"🌙 <b>Night Mode:</b> {night_str}"
+                f"{night_note}"
+            )
 
-        # Create control buttons
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(text="⚙️ Edit Settings", callback_data=f"edit_order_params:{order['_id']}"),
-            InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"edit_settings:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
-            InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"change_speed_menu:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
-            InlineKeyboardButton(text="Edit Random Views", callback_data=f"edit_random:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text="🔔 Mute/Unmute", callback_data=f"toggle_mute:{order['_id']}"),
-            InlineKeyboardButton(text="🔘 Auto Poll/Votes", callback_data=f"auto_poll:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text=f"🌙 Night Mode: {night_str}", callback_data=f"night_mode:{order['_id']}"),
-            InlineKeyboardButton(text="❌ Cancel Subscription", callback_data=f"cancel_order:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu")
-        )
+            # Create control buttons
+            builder = InlineKeyboardBuilder()
+            builder.row(
+                InlineKeyboardButton(text="⚙️ Edit Settings", callback_data=f"edit_order_params:{order['_id']}"),
+                InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"edit_settings:{order['_id']}"),
+                width=2
+            )
+            builder.row(
+                InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
+                InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"change_speed_menu:{order['_id']}"),
+                width=2
+            )
+            builder.row(
+                InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
+                InlineKeyboardButton(text="Edit Random Views", callback_data=f"edit_random:{order['_id']}"),
+                width=2
+            )
+            builder.row(
+                InlineKeyboardButton(text="🔔 Mute/Unmute", callback_data=f"toggle_mute:{order['_id']}"),
+                InlineKeyboardButton(text="🔘 Auto Poll/Votes", callback_data=f"auto_poll:{order['_id']}"),
+                width=2
+            )
+            builder.row(
+                InlineKeyboardButton(text=f"🌙 Night Mode: {night_str}", callback_data=f"night_mode:{order['_id']}"),
+                InlineKeyboardButton(text="❌ Cancel Subscription", callback_data=f"cancel_order:{order['_id']}"),
+                width=2
+            )
+            builder.row(
+                InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu")
+            )
 
         await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
 
@@ -1673,32 +1742,32 @@ async def start_manual_reactions(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🗳️ Order Votes")
 async def start_votes_order(message: types.Message, state: FSMContext):
-    """Start vote ordering - Step 1: Select channel/group (FIXED WORKFLOW)"""
+    """Start vote ordering - Step 1: Share channel/group"""
+    await state.clear()
     await state.update_data(service_type="poll_votes")
     
-    # Improved workflow: Allow both channels and groups
     await message.answer(
         "🗳️ <b>Order Votes - Step 1</b>\n\n"
         "📢 Select the channel or group where the poll is posted:\n\n"
-        "👇 Tap a button below to share the chat",
+        "👇 Tap the button below to add channel/group",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[
                 [
                     KeyboardButton(
-                        text="➕ Share Channel",
+                        text="➕ Add Channel",
                         request_chat=KeyboardButtonRequestChat(
-                            request_id=3,
+                            request_id=98,
                             chat_is_channel=True,
-                            bot_is_member=True
+                            bot_is_member=False
                         )
                     ),
                     KeyboardButton(
-                        text="➕ Share Group",
+                        text="➕ Add Group",
                         request_chat=KeyboardButtonRequestChat(
-                            request_id=4,
+                            request_id=99,
                             chat_is_channel=False,
-                            bot_is_member=True
+                            bot_is_member=False
                         )
                     )
                 ],
@@ -1707,7 +1776,383 @@ async def start_votes_order(message: types.Message, state: FSMContext):
             resize_keyboard=True
         )
     )
-    await state.set_state(OrderStates.SELECTING_CHANNEL)
+    await state.set_state(VoteOrderStates.WAITING_FOR_CHANNEL)
+
+# Vote Order Handler - Step 2: Channel Shared
+@dp.message(VoteOrderStates.WAITING_FOR_CHANNEL, F.chat_shared)
+async def vote_channel_shared(message: types.Message, state: FSMContext):
+    """Handle channel/group share for vote orders"""
+    chat_info = message.chat_shared
+    channel_id = chat_info.chat_id
+    channel_title = chat_info.title or "Shared Channel"
+    
+    await state.update_data(
+        channel_id=channel_id,
+        channel_title=channel_title
+    )
+    
+    await message.answer(
+        f"✅ <b>Channel Selected:</b> {html_escape(channel_title)}\n\n"
+        "🔗 <b>Step 2:</b> Please send the <b>public link or invite link</b> of this channel/group\n\n"
+        "📝 Example:\n"
+        "• https://t.me/yourchannel\n"
+        "• https://t.me/+xxxxx (private link)",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(VoteOrderStates.WAITING_FOR_INVITE_LINK)
+
+# Vote Order Handler - Step 3: Invite Link Received
+@dp.message(VoteOrderStates.WAITING_FOR_INVITE_LINK, F.text)
+async def vote_invite_link_received(message: types.Message, state: FSMContext):
+    """Handle invite link and request post forward"""
+    if message.text == "⬅️ Cancel Order":
+        await state.clear()
+        await message.answer(
+            "❌ Order cancelled",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
+    
+    invite_link = message.text.strip()
+    
+    # Validate link format
+    if not any(x in invite_link.lower() for x in ['t.me/', 'telegram.me/', 'telegram.dog/']):
+        await message.answer(
+            "❌ Invalid link format.\n\n"
+            "Please send a valid Telegram link:\n"
+            "• https://t.me/yourchannel\n"
+            "• https://t.me/+xxxxx"
+        )
+        return
+    
+    await state.update_data(invite_link=invite_link)
+    
+    data = await state.get_data()
+    channel_title = data.get('channel_title', 'Channel')
+    
+    await message.answer(
+        f"✅ <b>Link Saved</b>\n\n"
+        f"📢 <b>Channel/Group:</b> {html_escape(channel_title)}\n"
+        f"🔗 <b>Link:</b> {html_escape(invite_link)}\n\n"
+        "📮 <b>Step 3:</b> Please <b>forward the poll post</b> from your channel or group\n\n"
+        "⚠️ Make sure the forwarded message contains a poll!",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(VoteOrderStates.WAITING_FOR_POST_FORWARD)
+
+# Vote Order Handler - Step 4: Post Forwarded with Poll
+@dp.message(VoteOrderStates.WAITING_FOR_POST_FORWARD, F.forward_from_chat)
+async def vote_post_forwarded(message: types.Message, state: FSMContext):
+    """Handle forwarded post with poll detection"""
+    if not message.poll:
+        await message.answer(
+            "❌ This post doesn't contain a poll!\n\n"
+            "Please forward a post that has a poll in it.",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="⬅️ Cancel Order")]],
+                resize_keyboard=True
+            )
+        )
+        return
+    
+    # Extract poll information
+    poll = message.poll
+    poll_options = [opt.text for opt in poll.options]
+    content_id = message.forward_from_message_id if message.forward_from_message_id else message.message_id
+    
+    await state.update_data(
+        poll_id=poll.id,
+        poll_question=poll.question,
+        poll_options=poll_options,
+        content_id=content_id
+    )
+    
+    # Show poll options for selection
+    builder = ReplyKeyboardBuilder()
+    for i, option in enumerate(poll_options):
+        option_display = option[:20] + "..." if len(option) > 20 else option
+        builder.add(KeyboardButton(text=f"{i+1}. {option_display}"))
+    builder.adjust(1)  # One option per row
+    builder.row(KeyboardButton(text="⬅️ Cancel Order"))
+    
+    await message.answer(
+        f"✅ <b>Poll Detected!</b>\n\n"
+        f"❓ <b>Question:</b> {html_escape(poll.question)}\n\n"
+        f"📊 <b>Available Options ({len(poll_options)}):</b>\n"
+        + "\n".join([f"{i+1}. {html_escape(opt)}" for i, opt in enumerate(poll_options)]) +
+        "\n\n👇 <b>Select which option you want to boost:</b>",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup(resize_keyboard=True)
+    )
+    await state.set_state(VoteOrderStates.WAITING_FOR_OPTION_SELECTION)
+
+# Vote Order Handler - Step 5: Option Selected
+@dp.message(VoteOrderStates.WAITING_FOR_OPTION_SELECTION, F.text)
+async def vote_option_selected(message: types.Message, state: FSMContext):
+    """Handle poll option selection"""
+    if message.text == "⬅️ Cancel Order":
+        await state.clear()
+        await message.answer(
+            "❌ Order cancelled",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
+    
+    data = await state.get_data()
+    poll_options = data.get('poll_options', [])
+    
+    # Parse selected option number
+    try:
+        # Extract number from format "1. Option Text"
+        option_num = int(message.text.split(".")[0].strip())
+        if option_num < 1 or option_num > len(poll_options):
+            raise ValueError("Invalid option number")
+        
+        selected_option_index = option_num - 1
+        selected_option_text = poll_options[selected_option_index]
+        
+    except:
+        await message.answer(
+            "❌ Invalid selection!\n\n"
+            "Please select an option from the keyboard below:",
+            reply_markup=message.reply_markup
+        )
+        return
+    
+    await state.update_data(
+        option_index=selected_option_index,
+        option_text=selected_option_text
+    )
+    
+    await message.answer(
+        f"✅ <b>Option Selected:</b>\n{html_escape(selected_option_text)}\n\n"
+        "🔢 <b>Step 5:</b> How many votes do you want?\n\n"
+        "💡 Enter a number (e.g., 100, 500, 1000)",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="100"), KeyboardButton(text="500")],
+                [KeyboardButton(text="1000"), KeyboardButton(text="2000")],
+                [KeyboardButton(text="⬅️ Cancel Order")]
+            ],
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(VoteOrderStates.WAITING_FOR_QUANTITY)
+
+# Vote Order Handler - Step 6: Quantity Entered
+@dp.message(VoteOrderStates.WAITING_FOR_QUANTITY, F.text)
+async def vote_quantity_entered(message: types.Message, state: FSMContext):
+    """Handle vote quantity and show confirmation"""
+    if message.text == "⬅️ Cancel Order":
+        await state.clear()
+        await message.answer(
+            "❌ Order cancelled",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
+    
+    try:
+        quantity = int(message.text)
+        if quantity < 10:
+            await message.answer(
+                "❌ Minimum order is 10 votes!\n\n"
+                "Please enter a valid quantity:"
+            )
+            return
+        
+        if quantity > 10000:
+            await message.answer(
+                "❌ Maximum order is 10,000 votes per order!\n\n"
+                "Please enter a valid quantity:"
+            )
+            return
+        
+    except ValueError:
+        await message.answer(
+            "❌ Invalid number!\n\n"
+            "Please enter a valid quantity (e.g., 100, 500, 1000):"
+        )
+        return
+    
+    # Calculate price
+    pricing = await get_pricing()
+    price_per_vote = pricing.get('poll_votes', 0.03)
+    total_price = round(quantity * price_per_vote, 2)
+    
+    data = await state.get_data()
+    channel_title = data.get('channel_title', 'Channel')
+    poll_question = data.get('poll_question', 'Poll')
+    option_text = data.get('option_text', 'Option')
+    
+    await state.update_data(
+        quantity=quantity,
+        total_price=total_price
+    )
+    
+    # Get user balance
+    user = await get_or_create_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+    balance = user.get('balance', 0)
+    
+    # Show confirmation
+    confirmation_msg = (
+        "📋 <b>Order Summary</b>\n\n"
+        f"📢 <b>Channel:</b> {html_escape(channel_title)}\n"
+        f"❓ <b>Poll:</b> {html_escape(poll_question[:50])}\n"
+        f"✅ <b>Option:</b> {html_escape(option_text[:30])}\n"
+        f"🗳️ <b>Votes:</b> {quantity}\n"
+        f"💰 <b>Total Cost:</b> ${total_price}\n"
+        f"💳 <b>Your Balance:</b> ${balance:.2f}\n\n"
+    )
+    
+    if balance >= total_price:
+        confirmation_msg += "✅ Sufficient balance! Confirm to proceed."
+        keyboard = [
+            [KeyboardButton(text="✅ Confirm Order")],
+            [KeyboardButton(text="⬅️ Cancel Order")]
+        ]
+    else:
+        needed = total_price - balance
+        confirmation_msg += f"❌ Insufficient balance!\n💵 You need ${needed:.2f} more.\n\n" \
+                          "Please add balance first."
+        keyboard = [
+            [KeyboardButton(text="💳 Add Balance")],
+            [KeyboardButton(text="⬅️ Cancel Order")]
+        ]
+    
+    await message.answer(
+        confirmation_msg,
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=keyboard,
+            resize_keyboard=True
+        )
+    )
+    await state.set_state(VoteOrderStates.WAITING_FOR_CONFIRMATION)
+
+# Vote Order Handler - Step 7: Confirmation
+@dp.message(VoteOrderStates.WAITING_FOR_CONFIRMATION, F.text)
+async def vote_order_confirmed(message: types.Message, state: FSMContext):
+    """Handle final vote order confirmation and processing"""
+    if message.text == "⬅️ Cancel Order":
+        await state.clear()
+        await message.answer(
+            "❌ Order cancelled",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
+    
+    if message.text == "💳 Add Balance":
+        await state.clear()
+        await message.answer(
+            "💳 <b>Add Balance</b>\n\nSelect payment method:",
+            parse_mode="HTML",
+            reply_markup=get_main_menu_keyboard()
+        )
+        # Trigger add balance flow
+        await message.answer("Please use '💳 Add Balance' from main menu")
+        return
+    
+    if message.text != "✅ Confirm Order":
+        return
+    
+    data = await state.get_data()
+    user_id = message.from_user.id
+    
+    # Get all required data
+    channel_id = data.get('channel_id')
+    channel_title = data.get('channel_title')
+    invite_link = data.get('invite_link')
+    poll_id = data.get('poll_id')
+    poll_question = data.get('poll_question')
+    option_index = data.get('option_index')
+    option_text = data.get('option_text')
+    content_id = data.get('content_id')
+    quantity = data.get('quantity')
+    total_price = data.get('total_price')
+    poll_options = data.get('poll_options', [])
+    
+    # Check balance again
+    user = await get_or_create_user(user_id, message.from_user.username, message.from_user.first_name)
+    balance = user.get('balance', 0)
+    
+    if balance < total_price:
+        await message.answer(
+            "❌ Insufficient balance!\n\n"
+            "Please add balance first.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        await state.clear()
+        return
+    
+    # Deduct balance
+    await update_user_balance(user_id, -total_price)
+    
+    # NOW join all clients to channel AFTER payment confirmation
+    await message.answer(
+        "⏳ Processing your order...\n"
+        "Clients are joining the channel...",
+        reply_markup=get_main_menu_keyboard()
+    )
+    
+    # Join all clients to channel
+    if active_clients and invite_link:
+        await join_all_clients_to_channel(channel_id, invite_link)
+    
+    # Create order in database
+    order_id = await create_order(
+        user_id=user_id,
+        service_identifier="poll_votes",
+        service_type="manual",
+        channel_id=channel_id,
+        channel_title=channel_title,
+        content_id=content_id,
+        quantity=quantity,
+        charge=total_price,
+        status="confirmed",
+        poll_id=poll_id,
+        poll_question=poll_question,
+        option_index=option_index,
+        option_text=option_text
+    )
+    
+    # Store invite link for joining
+    await add_user_channel(
+        user_id=user_id,
+        channel_id=channel_id,
+        channel_title=channel_title,
+        is_public='t.me/+' not in invite_link and 'joinchat' not in invite_link,
+        invite_link=invite_link
+    )
+    
+    await message.answer(
+        "✅ <b>Order Confirmed!</b>\n\n"
+        f"🗳️ <b>Votes:</b> {quantity}\n"
+        f"💰 <b>Charged:</b> ${total_price}\n"
+        f"💳 <b>New Balance:</b> ${balance - total_price:.2f}\n\n"
+        "📊 Your order is now being processed!\n"
+        "⏱️ Delivery will start shortly using master-worker method.\n\n"
+        "Check '📦 Active Orders' to monitor progress.",
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard()
+    )
+    
+    await state.clear()
+    
+    # Start vote delivery in background
+    asyncio.create_task(deliver_votes_master_worker(order_id))
 
 @dp.message(OrderStates.waiting_for_content, F.media_group_id)
 async def handle_album(message: types.Message):
@@ -2181,12 +2626,14 @@ async def process_confirmation(message: types.Message, state: FSMContext):
                 "invite_link": invite_link
             }}
         )
-        
-        # New: Join channel with workers only after payment/confirmation
-        if invite_link and active_clients:
-            asyncio.create_task(join_all_clients_to_channel(data.get('channel_id'), invite_link))
 
     await update_user_balance(user_id, -charge)
+    
+    # FIXED: Join channel with workers ONLY after balance deduction
+    if service_identifier == 'poll_votes':
+        invite_link = data.get('invite_link')
+        if invite_link and active_clients:
+            asyncio.create_task(join_all_clients_to_channel(data.get('channel_id'), invite_link))
 
     # --- Styled Confirmation Message ---
     if service_identifier == 'manual_reactions':
@@ -5358,7 +5805,7 @@ async def start_bulk_import(callback: types.CallbackQuery, state: FSMContext):
         "📁 Please send me a ZIP file containing your Telegram session files (.session files).\n\n"
         "ℹ️ <b>Requirements:</b>\n"
         "• File must be a ZIP archive\n"
-        "• Maximum 200 sessions per ZIP\n"
+        "• Maximum 1000 sessions per ZIP\n"
         "• Sessions will be imported with 20-25 sec intervals\n"
         "• You'll receive notifications for each session\n\n"
         "⏳ Send the ZIP file now...",
@@ -5435,11 +5882,11 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             return
         
         # Check session count
-        if len(session_files) > 200:
+        if len(session_files) > 1000:
             await processing_msg.edit_text(
                 f"❌ <b>Too Many Sessions</b>\n\n"
                 f"Found: {len(session_files)} sessions\n"
-                f"Maximum: 200 sessions per ZIP\n\n"
+                f"Maximum: 1000 sessions per ZIP\n\n"
                 f"Please split into smaller batches.",
                 parse_mode="HTML"
             )
@@ -5465,13 +5912,17 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             session_name = os.path.basename(session_file).replace('.session', '')
             
             try:
+                # Ensure sessions directory exists
+                sessions_dir = "/app/backend/sessions"
+                os.makedirs(sessions_dir, exist_ok=True)
+                
                 # Copy session file to sessions directory
-                dest_path = f"/app/backend/sessions/{session_name}.session"
+                dest_path = f"{sessions_dir}/{session_name}.session"
                 shutil.copy2(session_file, dest_path)
                 
                 # Create client from file
                 client = await create_telegram_client_from_file(
-                    f"/app/backend/sessions/{session_name}",
+                    f"{sessions_dir}/{session_name}",
                     api_id=API_ID,
                     api_hash=API_HASH
                 )
@@ -5688,14 +6139,59 @@ async def start_remove_account(callback: types.CallbackQuery, state: FSMContext)
         await callback.answer("No accounts to remove.")
         return
 
+    # Build text with status indicators
+    text = "📱 <b>Select an account to remove:</b>\n\n"
+    for i, session in enumerate(sessions, 1):
+        # Get status with emoji indicator
+        status = session.get('status', 'unknown')
+        if status == 'active':
+            status_emoji = "✅"
+            status_text = "Active"
+        elif status == 'unauthorized':
+            status_emoji = "⚠️"
+            status_text = "Expired"
+        elif status == 'connection_error':
+            status_emoji = "🔌"
+            status_text = "Connection Error"
+        elif status == 'error' or status == 'load_error':
+            status_emoji = "❌"
+            status_text = "Error"
+        else:
+            status_emoji = "❓"
+            status_text = "Unknown"
+        
+        text += f"{i}. {session['phone']} {status_emoji} {status_text}\n"
+    
+    text += "\n💡 <b>Status Guide:</b>\n"
+    text += "✅ Active - Working normally\n"
+    text += "⚠️ Expired - Session needs re-authentication\n"
+    text += "🔌 Connection Error - Network/API issue (may auto-recover)\n"
+    text += "❌ Error - Needs attention\n\n"
+    text += "<i>Sessions are NEVER auto-deleted. You have full control.</i>"
+
     builder = ReplyKeyboardBuilder()
     for session in sessions:
-        builder.add(KeyboardButton(text=session['phone']))
+        # Get status emoji for keyboard button
+        status = session.get('status', 'unknown')
+        if status == 'active':
+            status_emoji = "✅"
+        elif status == 'unauthorized':
+            status_emoji = "⚠️"
+        elif status == 'connection_error':
+            status_emoji = "🔌"
+        elif status == 'error' or status == 'load_error':
+            status_emoji = "❌"
+        else:
+            status_emoji = "❓"
+        
+        button_text = f"{session['phone']} {status_emoji}"
+        builder.add(KeyboardButton(text=button_text))
     builder.adjust(2)
     builder.row(KeyboardButton(text="⬅️ Cancel"))
 
     await callback.message.answer(
-        "Select an account to remove:",
+        text,
+        parse_mode="HTML",
         reply_markup=builder.as_markup(resize_keyboard=True)
     )
     await state.set_state(TelegramAccountStates.CONFIRM_REMOVE_ACCOUNT)
@@ -5715,9 +6211,33 @@ async def remove_account_from_admin(message: types.Message, state: FSMContext):
 
     text = "📱 <b>Telegram Accounts to Remove:</b>\n\n"
     for i, session in enumerate(sessions, 1):
-        text += f"{i}. {session['phone']} - @{session.get('username', 'N/A')}\n"
+        # Get status with emoji indicator
+        status = session.get('status', 'unknown')
+        if status == 'active':
+            status_emoji = "✅"
+            status_text = "Active"
+        elif status == 'unauthorized':
+            status_emoji = "⚠️"
+            status_text = "Expired"
+        elif status == 'connection_error':
+            status_emoji = "🔌"
+            status_text = "Connection Error"
+        elif status == 'error' or status == 'load_error':
+            status_emoji = "❌"
+            status_text = "Error"
+        else:
+            status_emoji = "❓"
+            status_text = "Unknown"
+        
+        text += f"{i}. {session['phone']} - @{session.get('username', 'N/A')} {status_emoji} {status_text}\n"
 
-    text += "\n📞 <b>Enter the phone number you want to remove:</b>\n<i>(Example: +1234567890)</i>"
+    text += "\n💡 <b>Status Guide:</b>\n"
+    text += "✅ Active - Working normally\n"
+    text += "⚠️ Expired - Session needs re-authentication\n"
+    text += "🔌 Connection Error - Network/API issue (may auto-recover)\n"
+    text += "❌ Error - Needs attention\n\n"
+    text += "<i>Sessions are NEVER auto-deleted. You have full control.</i>\n\n"
+    text += "📞 <b>Enter the phone number you want to remove:</b>\n<i>(Example: +1234567890)</i>"
 
     await message.answer(
         text,
@@ -5736,7 +6256,11 @@ async def confirm_remove_account(message: types.Message, state: FSMContext):
         await admin_command(message,state)
         return
 
+    # Extract phone number (remove status emoji if present)
     phone = message.text.strip()
+    # Remove any emoji characters to get clean phone number
+    phone = ''.join(c for c in phone if c.isdigit() or c == '+')
+    
     session = await sessions_collection.find_one({"phone": phone})
 
     if not session:
@@ -5753,12 +6277,31 @@ async def confirm_remove_account(message: types.Message, state: FSMContext):
 
     await state.update_data(phone=phone)
 
+    # Get status with emoji indicator
+    status = session.get('status', 'unknown')
+    if status == 'active':
+        status_emoji = "✅"
+        status_text = "Active - Working normally"
+    elif status == 'unauthorized':
+        status_emoji = "⚠️"
+        status_text = "Expired - Session needs re-authentication"
+    elif status == 'connection_error':
+        status_emoji = "🔌"
+        status_text = "Connection Error - Network/API issue"
+    elif status == 'error' or status == 'load_error':
+        status_emoji = "❌"
+        status_text = "Error - Needs attention"
+    else:
+        status_emoji = "❓"
+        status_text = "Unknown status"
+
     confirmation_text = (
         f"⚠️ <b>Confirm Account Removal</b>\n\n"
         f"📞 <b>Phone:</b> <code>{session['phone']}</code>\n"
         f"👤 <b>Name:</b> {session.get('first_name', 'N/A')} {session.get('last_name', '')}\n"
         f"🆔 <b>Username:</b> @{session.get('username', 'N/A')}\n"
         f"🆔 <b>User ID:</b> <code>{session.get('user_id', 'N/A')}</code>\n"
+        f"📊 <b>Status:</b> {status_emoji} {status_text}\n"
         f"📅 <b>Added:</b> {session['created_at'].strftime('%Y-%m-%d %H:%M')}\n\n"
         f"❗️ This will permanently remove this account from the bot.\n"
         f"Are you sure you want to proceed?"
@@ -7702,6 +8245,151 @@ async def delayed_vote_order(client, channel_id, message_id, option_index, poll_
     """Delayed vote delivery for speed control"""
     await asyncio.sleep(delay)
     return await process_vote_order(client, channel_id, message_id, option_index, poll_options_count)
+
+async def deliver_votes_master_worker(order_id):
+    """Deliver votes using master-worker method - similar to views/reactions delivery"""
+    try:
+        order = await orders_collection.find_one({"_id": order_id})
+        if not order:
+            print(f"❌ Vote order {order_id} not found")
+            return
+        
+        channel_id = order.get('channel_id')
+        content_id = order.get('content_id')
+        quantity = order.get('quantity', 0)
+        option_index = order.get('option_index', 0)
+        user_id = order.get('user_id')
+        poll_options = order.get('poll_options', [])
+        poll_options_count = len(poll_options)
+        
+        if not active_clients:
+            print(f"❌ No active clients for vote order {order_id}")
+            await orders_collection.update_one(
+                {"_id": order_id},
+                {"$set": {"status": "failed", "error": "No active clients"}}
+            )
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"🗳️ VOTE DELIVERY STARTED - Order {order_id}")
+        print(f"📊 Target: {quantity} votes on option {option_index}")
+        print(f"👥 Using {len(active_clients)} client(s)")
+        print(f"{'='*60}\n")
+        
+        # Update status
+        await orders_collection.update_one(
+            {"_id": order_id},
+            {"$set": {"status": "processing", "updated_at": datetime.utcnow()}}
+        )
+        
+        # Master-worker distribution
+        master_client = active_clients[0]
+        worker_clients = active_clients[1:] if len(active_clients) > 1 else []
+        
+        total_clients = len(active_clients)
+        votes_per_client = quantity // total_clients
+        remaining_votes = quantity % total_clients
+        
+        delivered = 0
+        base_delay = 15  # 15 seconds delay between votes
+        
+        # Distribute work
+        async def worker_deliver_votes(client, client_index, votes_to_deliver):
+            nonlocal delivered
+            client_delivered = 0
+            
+            for i in range(votes_to_deliver):
+                try:
+                    # Add delay
+                    if i > 0:
+                        await asyncio.sleep(base_delay)
+                    
+                    # Send vote
+                    success = await process_vote_order(
+                        client,
+                        channel_id,
+                        content_id,
+                        option_index,
+                        poll_options_count
+                    )
+                    
+                    if success:
+                        client_delivered += 1
+                        delivered += 1
+                        
+                        # Update progress every 10 votes
+                        if delivered % 10 == 0:
+                            await orders_collection.update_one(
+                                {"_id": order_id},
+                                {
+                                    "$set": {
+                                        "delivered_votes": delivered,
+                                        "updated_at": datetime.utcnow()
+                                    }
+                                }
+                            )
+                            progress = (delivered / quantity) * 100
+                            print(f"  Client {client_index}: {client_delivered} votes | Total: {delivered}/{quantity} ({progress:.1f}%)")
+                    
+                except Exception as e:
+                    print(f"  ❌ Client {client_index} vote error: {e}")
+            
+            return client_delivered
+        
+        # Start master + workers
+        tasks = []
+        
+        # Master gets base allocation + remaining
+        master_votes = votes_per_client + remaining_votes
+        tasks.append(worker_deliver_votes(master_client, 0, master_votes))
+        
+        # Workers get base allocation
+        for i, worker in enumerate(worker_clients, start=1):
+            tasks.append(worker_deliver_votes(worker, i, votes_per_client))
+        
+        # Execute all workers in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Final update
+        await orders_collection.update_one(
+            {"_id": order_id},
+            {
+                "$set": {
+                    "status": "completed",
+                    "delivered_votes": delivered,
+                    "completed_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        print(f"\n{'='*60}")
+        print(f"✅ VOTE DELIVERY COMPLETED")
+        print(f"📊 Delivered: {delivered}/{quantity} votes ({(delivered/quantity)*100:.1f}%)")
+        print(f"{'='*60}\n")
+        
+        # Notify user
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ <b>Vote Order Completed!</b>\n\n"
+                f"🗳️ <b>Delivered:</b> {delivered}/{quantity} votes\n"
+                f"📊 <b>Success Rate:</b> {(delivered/quantity)*100:.1f}%\n\n"
+                f"Thank you for using our service!",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"Failed to send completion notification: {e}")
+        
+    except Exception as e:
+        print(f"❌ Vote delivery error for order {order_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        await orders_collection.update_one(
+            {"_id": order_id},
+            {"$set": {"status": "failed", "error": str(e)}}
+        )
 
 
 
