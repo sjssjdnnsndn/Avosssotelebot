@@ -5917,12 +5917,14 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
                 os.makedirs(sessions_dir, exist_ok=True)
                 
                 # Copy session file to sessions directory
-                dest_path = os.path.join(sessions_dir, f"{session_name}.session")
+                session_name_clean = os.path.basename(session_file).replace('.session', '')
+                dest_path = os.path.join(sessions_dir, f"{session_name_clean}.session")
                 shutil.copy2(session_file, dest_path)
                 
                 # Create client from file
+                # Use the clean path without extension for Telethon
                 client = await create_telegram_client_from_file(
-                    f"{sessions_dir}/{session_name}",
+                    os.path.join(sessions_dir, session_name_clean),
                     api_id=API_ID,
                     api_hash=API_HASH
                 )
