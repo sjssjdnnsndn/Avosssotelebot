@@ -61,7 +61,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAFPpcd3QshqvsFRBRf6oGvRVm7dfartf0Q")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAEesZd7gzPjuXEaZFG0DmV9Ov4syNzntOM")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
@@ -1327,8 +1327,7 @@ async def get_config_text(config: ConfigData, is_reactions: bool = False) -> str
             f"❤️‍🔥 *Maximum Reactions Limit:* `Max {len(active_clients)}`\n\n"
             f"📊 *Reaction Per Post:* `{reactions_count}`\n"
             f"📝 *Posts Per Day:* `{config.posts_per_day}`\n"
-            f"📆 *Number of Days:* `{config.days}`\n"
-            f"{speed_emoji} *Delivery Speed:* `{config.speed_name}` (x{config.speed_multiplier})\n\n"
+            f"📆 *Number of Days:* `{config.days}`\n\n"
             f"💰 *Total Charge:* `${config.charge:.4f}` (`{await usd_to_inr_converter(config.charge)}`)"
         )
     else:
@@ -1338,8 +1337,7 @@ async def get_config_text(config: ConfigData, is_reactions: bool = False) -> str
             f"👁️ *Maximum View Limit:* `Max {len(active_clients)}`\n\n"
             f"📊 *Views Per Post:* `{config.total_views}`\n"
             f"📝 *Posts Per Day:* `{config.posts_per_day}`\n"
-            f"📆 *Number of Days:* `{config.days}`\n"
-            f"{speed_emoji} *Delivery Speed:* `{config.speed_name}` (x{config.speed_multiplier})\n\n"
+            f"📆 *Number of Days:* `{config.days}`\n\n"
             f"💰 *Total Charge:* `${config.charge:.4f}` (`{await usd_to_inr_converter(config.charge)}`)"
         )
 
@@ -2071,6 +2069,12 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = message.from_user.id
     
+    # FIX: Delete the confirmation message to prevent double-click
+    try:
+        await message.delete()
+    except Exception:
+        pass  # Ignore if message already deleted
+    
     # Get all required data
     channel_id = data.get('channel_id')
     channel_title = data.get('channel_title')
@@ -2101,7 +2105,7 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
     await update_user_balance(user_id, -total_price)
     
     # NOW join all clients to channel AFTER payment confirmation
-    await message.answer(
+    processing_msg = await message.answer(
         "⏳ Processing your order...\n"
         "Clients are joining the channel...",
         reply_markup=get_main_menu_keyboard()
@@ -2136,6 +2140,12 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
         is_public='t.me/+' not in invite_link and 'joinchat' not in invite_link,
         invite_link=invite_link
     )
+    
+    # FIX: Delete processing message and send new confirmation
+    try:
+        await processing_msg.delete()
+    except Exception:
+        pass
     
     await message.answer(
         "✅ <b>Order Confirmed!</b>\n\n"
@@ -2962,115 +2972,38 @@ async def edit_order_settings(callback: types.CallbackQuery):
     
     builder = InlineKeyboardBuilder()
     
-    # Display current delay prominently
-    delay_display = f"{hours}h {minutes}m {seconds}s" if hours > 0 else (f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s")
+    # Simple delay display
+    delay_display = f"{total_delay_seconds}s"
+    
+    # Determine service type from order
+    service_identifier = order.get('service_identifier', '')
+    if 'view' in service_identifier.lower():
+        service_type = 'views'
+        service_label = 'view'
+    else:
+        service_type = 'reactions'
+        service_label = 'reaction'
+    
+    # Simple -1s and +1s buttons
     builder.row(
-        InlineKeyboardButton(text=f"⏱️ Delay: {delay_display}", callback_data=f"delay_info:{order_id}"),
-        width=1
+        InlineKeyboardButton(text="◀️ -1s", callback_data=f"adjust_seconds:{order_id}:-1"),
+        InlineKeyboardButton(text="▶️ +1s", callback_data=f"adjust_seconds:{order_id}:1"),
+        width=2
     )
     
-    # Hours adjustment
-    builder.row(
-        InlineKeyboardButton(text="⏪", callback_data=f"adjust_hours:{order_id}:-1"),
-        InlineKeyboardButton(text=f"⏰ {hours}h", callback_data=f"delay_info:{order_id}"),
-        InlineKeyboardButton(text="⏩", callback_data=f"adjust_hours:{order_id}:1"),
-        width=3
-    )
-    
-    # Minutes adjustment
-    builder.row(
-        InlineKeyboardButton(text="⏪", callback_data=f"adjust_minutes:{order_id}:-1"),
-        InlineKeyboardButton(text=f"⏱️ {minutes}m", callback_data=f"delay_info:{order_id}"),
-        InlineKeyboardButton(text="⏩", callback_data=f"adjust_minutes:{order_id}:1"),
-        width=3
-    )
-    
-    # Seconds adjustment
-    builder.row(
-        InlineKeyboardButton(text="⏪", callback_data=f"adjust_seconds:{order_id}:-1"),
-        InlineKeyboardButton(text=f"⏲️ {seconds}s", callback_data=f"delay_info:{order_id}"),
-        InlineKeyboardButton(text="⏩", callback_data=f"adjust_seconds:{order_id}:1"),
-        width=3
-    )
-    
-    builder.row(
-        InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_delay:{order_id}"),
-        width=1
-    )
-    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
-    
-    service_type = 'views' if 'view' in order.get('service_type', '').lower() else 'reactions'
+    builder.row(InlineKeyboardButton(text="◀️ Back", callback_data=f"back_to_order:{order_id}"))
     
     text = (
-        f"⏱️ <b>Delay Adjustment</b>\n\n"
-        f"<b>Delay per {service_type[:-1]}: {delay_display}</b>\n\n"
-        f"📊 <b>Order Status:</b>\n"
-        f"• Total: {quantity} {service_type}\n"
-        f"• Delivered: {delivered} {service_type}\n"
-        f"• Remaining: {remaining} {service_type}\n\n"
-        f"⏳ <b>Time Estimates:</b>\n"
-        f"• Time Remaining: {time_remaining_str}\n"
-        f"• Total Time: {total_time_all}\n\n"
-        f"👥 Active Clients: {clients_count}\n\n"
-        f"🔧 <b>Adjust delay using buttons above:</b>\n"
-        f"• Hours: {hours}h\n"
-        f"• Minutes: {minutes}m\n"
-        f"• Seconds: {seconds}s\n\n"
-        f"Click ✅ Confirm to apply changes."
+        f"<b>Delay {delay_display}</b>\n\n"
+        f"⏳ You will receive {quantity} {service_type} in {total_time_all}"
     )
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("adjust_hours:"))
-async def adjust_hours_handler(callback: types.CallbackQuery):
-    """Adjust delay by hours"""
-    parts = callback.data.split(":")
-    order_id = parts[1]
-    adjustment = int(parts[2])
-    
-    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    if not order:
-        return await callback.answer("❌ Order not found.", show_alert=True)
-    
-    current_delay_seconds = order.get("custom_delay_seconds", 19)
-    new_delay_seconds = max(1, current_delay_seconds + (adjustment * 3600))
-    
-    await orders_collection.update_one(
-        {"_id": ObjectId(order_id)},
-        {"$set": {"custom_delay_seconds": new_delay_seconds, "updated_at": datetime.utcnow()}}
-    )
-    
-    hours = new_delay_seconds // 3600
-    await callback.answer(f"✅ Hours: {hours}h")
-    await edit_order_settings(callback)
-
-@dp.callback_query(F.data.startswith("adjust_minutes:"))
-async def adjust_minutes_handler(callback: types.CallbackQuery):
-    """Adjust delay by minutes"""
-    parts = callback.data.split(":")
-    order_id = parts[1]
-    adjustment = int(parts[2])
-    
-    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    if not order:
-        return await callback.answer("❌ Order not found.", show_alert=True)
-    
-    current_delay_seconds = order.get("custom_delay_seconds", 19)
-    new_delay_seconds = max(1, current_delay_seconds + (adjustment * 60))
-    
-    await orders_collection.update_one(
-        {"_id": ObjectId(order_id)},
-        {"$set": {"custom_delay_seconds": new_delay_seconds, "updated_at": datetime.utcnow()}}
-    )
-    
-    minutes = (new_delay_seconds % 3600) // 60
-    await callback.answer(f"✅ Minutes: {minutes}m")
-    await edit_order_settings(callback)
-
 @dp.callback_query(F.data.startswith("adjust_seconds:"))
 async def adjust_seconds_handler(callback: types.CallbackQuery):
-    """Adjust delay by seconds"""
+    """Adjust delay by seconds - SIMPLE VERSION"""
     parts = callback.data.split(":")
     order_id = parts[1]
     adjustment = int(parts[2])
@@ -3087,31 +3020,8 @@ async def adjust_seconds_handler(callback: types.CallbackQuery):
         {"$set": {"custom_delay_seconds": new_delay_seconds, "updated_at": datetime.utcnow()}}
     )
     
-    seconds = new_delay_seconds % 60
-    await callback.answer(f"✅ Seconds: {seconds}s")
+    await callback.answer(f"✅ Delay: {new_delay_seconds}s")
     await edit_order_settings(callback)
-
-@dp.callback_query(F.data.startswith("confirm_delay:"))
-async def confirm_delay_handler(callback: types.CallbackQuery):
-    """Confirm delay adjustments and return to order view"""
-    order_id = callback.data.split(":")[1]
-    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
-    if not order:
-        return await callback.answer("❌ Order not found.", show_alert=True)
-    
-    total_delay_seconds = order.get("custom_delay_seconds", 19)
-    
-    # Convert to readable format
-    hours = total_delay_seconds // 3600
-    minutes = (total_delay_seconds % 3600) // 60
-    seconds = total_delay_seconds % 60
-    
-    delay_display = f"{hours}h {minutes}m {seconds}s" if hours > 0 else (f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s")
-    
-    await callback.answer(f"✅ Delay confirmed: {delay_display}")
-    await send_updated_order_message(callback, order_id, f"✅ Delay adjustment confirmed: {delay_display}")
-
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_main_menu(callback: types.CallbackQuery):
@@ -5752,8 +5662,35 @@ async def check_logged_in_accounts(callback: types.CallbackQuery):
         await callback.answer("No accounts found in DB.")
         return
 
-    # Reload all clients from database
+    # FIX: Clear status flags before reloading to properly reinitialize
+    await sessions_collection.update_many(
+        {},
+        {
+            "$unset": {
+                "status": "",
+                "last_error": ""
+            },
+            "$set": {
+                "last_check": datetime.utcnow()
+            }
+        }
+    )
+    
+    # Disconnect existing clients properly
+    global active_clients
+    for client in active_clients:
+        try:
+            if client.is_connected():
+                await client.disconnect()
+        except Exception:
+            pass
+    active_clients = []
+    
+    # Reload all clients from database with clean state
     await load_all_clients()
+    
+    # Re-fetch sessions to get updated status
+    sessions = await get_all_sessions()
 
     # After reload, refresh the current page view
     total_pages = max(1, (len(sessions) + ACCOUNTS_PER_PAGE - 1) // ACCOUNTS_PER_PAGE)
@@ -5790,7 +5727,7 @@ async def check_logged_in_accounts(callback: types.CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_layout)
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-    await callback.answer("✅ Accounts refreshed!", show_alert=False)
+    await callback.answer(f"✅ Reloaded {len(active_clients)} accounts!", show_alert=True)
 
 
 
