@@ -1580,8 +1580,7 @@ async def active_orders_handler(message: types.Message):
             )
             builder.row(
                 InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
-                InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"change_speed_menu:{order['_id']}"),
-                width=2
+                width=1
             )
             builder.row(
                 InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
@@ -3771,9 +3770,8 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
             width=2
         )
         builder.row(
-            InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order['_id']}"),
             InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}"),
-            width=2
+            width=1
         )
 
         markup = builder.as_markup()
