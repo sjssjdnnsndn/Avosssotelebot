@@ -61,7 +61,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAFeg9mHoqUxgsLwhw15O3Q443u41hT7ZGU")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAGix2UgiaXYN9k5hp7u035YI1_QOT4EtxU")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
@@ -1144,8 +1144,7 @@ def get_main_menu_keyboard():
             KeyboardButton(text="❤️‍🔥 Reactions By Followers")
         ],
         [
-            KeyboardButton(text="👤 My Account"),
-            KeyboardButton(text="📢 My Channels")
+            KeyboardButton(text="👤 My Account")
         ],
         [
             KeyboardButton(text="📝📊 Manual Views"),
@@ -3688,8 +3687,7 @@ def get_order_control_markup(order, is_paused: bool, high_low_str: str, night_st
     )
     builder.row(
         InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
-        InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order['_id']}"),
-        width=2
+        width=1
     )
     builder.row(
         InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
