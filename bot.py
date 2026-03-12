@@ -3779,7 +3779,6 @@ async def show_channel_order_details(chat_id: int, user_id: int, channel_id: int
             f"📊 <b>{metric_label} Per Post:</b> <code>{per_post_qty}</code>\n"
             f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
             f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
-            f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code>\n"
             f"🔔 <b>Mute/Unmute:</b> <code>{mute_text}</code>\n"
             f"🌙 <b>Night Mode:</b> <code>{night_text}</code>\n"
             f"⏳ <b>{delay_info}</b>\n"
@@ -4766,12 +4765,11 @@ async def handle_payment_confirm(callback: types.CallbackQuery, state: FSMContex
 
             f"👁️ <b>{metric} Per Post:</b> <code>{per_post_value}</code>\n"
             f"📝 <b>Post Per Day:</b> <code>{config.posts_per_day}</code>\n"
-            f"⏳ <b>Duration:</b> <code>{config.days} Days</code>\n"
-            f"{speed_emoji} <b>Speed:</b> <code>{config.speed_name}</code> (x{config.speed_multiplier})\n\n"
+            f"⏳ <b>Duration:</b> <code>{config.days} Days</code>\n\n"
 
             f"💰 <b>Charge:</b> <code>${config.charge:.4f}</code>\n\n"
 
-            f"🔄 <i>Auto-service started! {metric.capitalize()} will be delivered at {config.speed_name} speed.</i>",
+            f"🔄 <i>Auto-service started! {metric.capitalize()} will be delivered automatically.</i>",
             parse_mode="HTML"
         )
 
