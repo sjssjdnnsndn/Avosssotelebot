@@ -61,7 +61,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAEesZd7gzPjuXEaZFG0DmV9Ov4syNzntOM")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAFeg9mHoqUxgsLwhw15O3Q443u41hT7ZGU")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
@@ -447,6 +447,62 @@ def calculate_delivery_time(quantity, delay_seconds, clients_count=1):
     
     # Format the output
     return f"{hours}h {minutes}m {seconds}s"
+
+
+def get_available_account_count() -> int:
+    """Return currently available Telegram account count."""
+    return max(0, len(active_clients))
+
+
+def get_per_post_limit() -> int:
+    """Per-post max limit should match available accounts."""
+    return max(1, get_available_account_count())
+
+
+def clamp_per_post_quantity(value: int) -> int:
+    """Clamp per-post quantity between 1 and available account limit."""
+    return max(1, min(int(value), get_per_post_limit()))
+
+
+def get_base_delay_seconds(speed_multiplier: float) -> int:
+    """Base delay in seconds from speed multiplier."""
+    if speed_multiplier == 0.5:
+        return 26
+    if speed_multiplier == 1.0:
+        return 19
+    if speed_multiplier == 1.5:
+        return 12
+    return 9
+
+
+def get_order_delay_seconds(order: dict) -> int:
+    """Resolve effective delay seconds for an order."""
+    custom_delay_seconds = order.get("custom_delay_seconds")
+    if custom_delay_seconds is not None:
+        try:
+            return max(1, int(custom_delay_seconds))
+        except Exception:
+            pass
+
+    base_delay = get_base_delay_seconds(order.get("speed_multiplier", 1.0))
+    legacy_custom = int(order.get("custom_delay", 0) or 0)
+    return max(1, base_delay + legacy_custom)
+
+
+def get_daily_delivery_snapshot(order: dict, per_post_quantity: int):
+    """Return (remaining_today_posts, daily_quantity, eta_text)."""
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    posts_per_day = max(0, int(order.get("posts_per_day", 0) or 0))
+    processed_today = order.get("processed_today", {}) or {}
+    processed_posts = len(processed_today.get(today_str, []))
+    remaining_today_posts = max(0, posts_per_day - processed_posts)
+
+    daily_quantity = max(0, int(per_post_quantity) * remaining_today_posts)
+    delay_seconds = get_order_delay_seconds(order)
+    clients_count = max(1, get_available_account_count())
+    eta_text = calculate_delivery_time(daily_quantity, delay_seconds, clients_count)
+
+    return remaining_today_posts, daily_quantity, eta_text
 
 async def calculate_order_price(views_per_post, posts_per_day, days):
     """Calculate order price based on parameters"""
@@ -1089,7 +1145,7 @@ def get_main_menu_keyboard():
         ],
         [
             KeyboardButton(text="👤 My Account"),
-            KeyboardButton(text="📦 Active Orders")
+            KeyboardButton(text="📢 My Channels")
         ],
         [
             KeyboardButton(text="📝📊 Manual Views"),
@@ -1220,13 +1276,17 @@ def get_channel_select_keyboard():
     )
 
 def get_my_channels_keyboard(channels):
-    """Create a keyboard with user's connected channels"""
-    builder = ReplyKeyboardBuilder()
+    """Create inline channel picker for My Channels."""
+    builder = InlineKeyboardBuilder()
     for channel in channels:
-        builder.add(KeyboardButton(text=f"📢 {channel['channel_title']}"))
-    builder.adjust(1)
-    builder.row(KeyboardButton(text="⬅️ Back"))
-    return builder.as_markup(resize_keyboard=True)
+        builder.row(
+            InlineKeyboardButton(
+                text=f"📢 {channel['channel_title']}",
+                callback_data=f"my_channel:{channel['channel_id']}"
+            )
+        )
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu"))
+    return builder.as_markup()
 
 def get_payment_confirmation_keyboard():
     return ReplyKeyboardMarkup(
@@ -1296,9 +1356,10 @@ class VoteOrderStates(StatesGroup):
 # ===== CONFIGURATION CLASS ===== #
 class ConfigData:
     def __init__(self):
-        self.max_views = float('inf')  # Unlimited
-        self.total_views = 10
-        self.total_reactions = 10  # used only in reactions
+        default_per_post = min(10, get_per_post_limit())
+        self.max_views = get_per_post_limit()
+        self.total_views = default_per_post
+        self.total_reactions = default_per_post  # used only in reactions
         self.posts_per_day = 20
         self.days = 30
         self.charge = 2.6240
@@ -1314,17 +1375,25 @@ class ConfigData:
 client_reactions = {}
 # Store configurations
 user_configs = {}
+# Track users currently processing a payment (prevents duplicate order spam)
+payment_processing_users = set()
 
 async def get_config_text(config: ConfigData, is_reactions: bool = False) -> str:
     pricing = await get_pricing()
     # Use speed config function to get emoji
     speed_name, speed_emoji = get_speed_name(config.speed_multiplier)
+    max_limit = get_per_post_limit()
+
+    config.total_views = clamp_per_post_quantity(config.total_views)
+    if hasattr(config, "total_reactions"):
+        config.total_reactions = clamp_per_post_quantity(config.total_reactions)
+
     if is_reactions:
         reactions_count = config.total_reactions if hasattr(config, "total_reactions") else config.total_views
         return (
             "*⚙️ System Configuration:*\n"
             "_Please configure the necessary parameters to initiate the process!_\n\n"
-            f"❤️‍🔥 *Maximum Reactions Limit:* `Max {len(active_clients)}`\n\n"
+            f"❤️‍🔥 *Maximum Reactions Limit:* `Max {max_limit}`\n\n"
             f"📊 *Reaction Per Post:* `{reactions_count}`\n"
             f"📝 *Posts Per Day:* `{config.posts_per_day}`\n"
             f"📆 *Number of Days:* `{config.days}`\n\n"
@@ -1334,7 +1403,7 @@ async def get_config_text(config: ConfigData, is_reactions: bool = False) -> str
         return (
             "*⚙️ System Configuration:*\n"
             "_Please configure the necessary parameters to initiate the process!_\n\n"
-            f"👁️ *Maximum View Limit:* `Max {len(active_clients)}`\n\n"
+            f"👁️ *Maximum View Limit:* `Max {max_limit}`\n\n"
             f"📊 *Views Per Post:* `{config.total_views}`\n"
             f"📝 *Posts Per Day:* `{config.posts_per_day}`\n"
             f"📆 *Number of Days:* `{config.days}`\n\n"
@@ -1482,41 +1551,32 @@ async def active_orders_handler(message: types.Message):
         high_low_str = "🟢 ON" if high_low else "🔴 OFF"
         night_mode = order.get("night_mode_enabled", False)
         night_str = "🌙 ON" if night_mode else "🌙 OFF"
-        custom_delay = order.get("custom_delay", 0)
 
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
         days_passed = (datetime.utcnow() - created).days
         days_remaining = max(0, days - days_passed)
 
         if order["service_identifier"] == "views_by_followers":
             service_label = "Auto Follower Views"
             per_post = order.get("views_per_post", 0)
+            per_post_label = "Views"
         elif order["service_identifier"] == "reactions_by_followers":
             service_label = "Auto Follower Reactions"
             per_post = order.get("reactions_per_post", 0)
+            per_post_label = "Reactions"
         elif order["service_identifier"] == "poll_votes":
             service_label = "Poll Votes"
             per_post = 0  # Poll votes don't have per_post
+            per_post_label = "Votes"
         else:
             service_label = "Unknown Service"
             per_post = 0
+            per_post_label = "Views"
 
-        # Calculate delay with custom adjustment
-        if speed_multiplier == 0.5:
-            base_delay_sec = 26
-        elif speed_multiplier == 1.0:
-            base_delay_sec = 19
-        elif speed_multiplier == 1.5:
-            base_delay_sec = 12
-        else:
-            base_delay_sec = 9
-        total_delay_sec = base_delay_sec + custom_delay
-        adj_str = f" ({custom_delay:+d}s custom)" if custom_delay != 0 else ""
-        hours, minutes = estimate_delivery_duration(per_post, speed_multiplier, 1)
-        time_str = ""
-        if hours > 0:
-            time_str += f"{hours}h "
-        time_str += f"{minutes}m"
+        total_delay_sec = get_order_delay_seconds(order)
+        base_delay_sec = get_base_delay_seconds(speed_multiplier)
+        custom_adjustment = total_delay_sec - base_delay_sec
+        adj_str = f" ({custom_adjustment:+d}s custom)" if custom_adjustment != 0 else ""
+        remaining_today_posts, daily_quantity, daily_eta = get_daily_delivery_snapshot(order, per_post)
 
         night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>" if night_mode else ""
 
@@ -1560,48 +1620,23 @@ async def active_orders_handler(message: types.Message):
                 f"🆔 <b>Channel ID:</b> {channel_id}\n"
                 f"📛 <b>Channel Name:</b> {channel_title}\n"
                 f"🔗 <b>Channel Username:</b> @{channel_title}\n"
-                f"👀 <b>Views per Post:</b> {per_post}\n"
+                f"👀 <b>{per_post_label} per Post:</b> {per_post}\n"
                 f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
                 f"🔀 <b>Random Views:</b> {random_views}\n"
                 f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
                 f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
-                f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
+                f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Today {daily_quantity} {per_post_label.lower()} in {daily_eta})\n"
                 f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
                 f"🌙 <b>Night Mode:</b> {night_str}"
                 f"{night_note}"
             )
 
-            # Create control buttons
-            builder = InlineKeyboardBuilder()
-            builder.row(
-                InlineKeyboardButton(text="⚙️ Edit Settings", callback_data=f"edit_order_params:{order['_id']}"),
-                InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"edit_settings:{order['_id']}"),
-                width=2
-            )
-            builder.row(
-                InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
-                width=1
-            )
-            builder.row(
-                InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
-                InlineKeyboardButton(text="Edit Random Views", callback_data=f"edit_random:{order['_id']}"),
-                width=2
-            )
-            builder.row(
-                InlineKeyboardButton(text="🔔 Mute/Unmute", callback_data=f"toggle_mute:{order['_id']}"),
-                InlineKeyboardButton(text="🔘 Auto Poll/Votes", callback_data=f"auto_poll:{order['_id']}"),
-                width=2
-            )
-            builder.row(
-                InlineKeyboardButton(text=f"🌙 Night Mode: {night_str}", callback_data=f"night_mode:{order['_id']}"),
-                InlineKeyboardButton(text="❌ Cancel Subscription", callback_data=f"cancel_order:{order['_id']}"),
-                width=2
-            )
-            builder.row(
-                InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu")
-            )
+            markup = get_order_control_markup(order, is_paused, high_low_str, night_str)
 
-        await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+        if order["service_identifier"] == "poll_votes":
+            await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+        else:
+            await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
     await message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
 
@@ -2153,7 +2188,7 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
         f"💳 <b>New Balance:</b> ${balance - total_price:.2f}\n\n"
         "📊 Your order is now being processed!\n"
         "⏱️ Delivery will start shortly using master-worker method.\n\n"
-        "Check '📦 Active Orders' to monitor progress.",
+        "Check '📢 My Channels' to monitor progress.",
         parse_mode="HTML",
         reply_markup=get_main_menu_keyboard()
     )
@@ -2690,13 +2725,43 @@ async def my_channels_handler(message: types.Message, state: FSMContext):
         await message.answer("You haven't added any channels yet.")
         return
 
-    # Store channels in state for selection
-    await state.update_data(available_channels=channels)
-    await state.set_state(OrderStates.SELECTING_CHANNEL)
+    await state.clear()
 
     await message.answer(
         "📢 Select a channel to view its order details:",
         reply_markup=get_my_channels_keyboard(channels)
+    )
+
+
+@dp.callback_query(F.data.startswith("my_channel:"))
+async def my_channel_select_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    channel_id_raw = callback.data.split(":", 1)[1]
+
+    try:
+        channel_id = int(channel_id_raw)
+    except ValueError:
+        return await callback.answer("❌ Invalid channel selection", show_alert=True)
+
+    selected_channel = await channels_collection.find_one({
+        "user_id": user_id,
+        "channel_id": channel_id
+    })
+    if not selected_channel:
+        return await callback.answer("❌ Channel not found", show_alert=True)
+
+    await callback.answer()
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await show_channel_order_details(
+        chat_id=callback.message.chat.id,
+        user_id=user_id,
+        channel_id=channel_id,
+        channel_title=selected_channel.get("channel_title", "Unknown Channel")
     )
 
 
@@ -2705,6 +2770,10 @@ async def change_order_speed(callback: types.CallbackQuery):
     parts = callback.data.split(":")
     order_id = parts[1]
     speed_type = parts[2]
+
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found", show_alert=True)
 
     # Set speed multiplier and name
     if speed_type == "normal":
@@ -2723,12 +2792,20 @@ async def change_order_speed(callback: types.CallbackQuery):
         await callback.answer("❌ Invalid speed selection")
         return
 
+    old_speed = order.get("speed_multiplier", 1.0)
+    old_base = get_base_delay_seconds(old_speed)
+    current_delay = get_order_delay_seconds(order)
+    custom_adjustment = current_delay - old_base
+    new_base = get_base_delay_seconds(speed_multiplier)
+    new_delay = max(1, new_base + custom_adjustment)
+
     # Update order speed (NO CHARGE - FREE feature)
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {"$set": {
             "speed_multiplier": speed_multiplier,
             "speed_name": speed_name,
+            "custom_delay_seconds": new_delay,
             "updated_at": datetime.utcnow()
         }}
     )
@@ -2793,40 +2870,24 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
     high_low_str = "🟢 ON" if high_low else "🔴 OFF"
     night_mode = order.get("night_mode_enabled", False)
     night_str = "🌙 ON" if night_mode else "🌙 OFF"
-    custom_delay = order.get("custom_delay", 0)
 
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
     days_passed = (datetime.utcnow() - created).days
     days_remaining = max(0, days - days_passed)
 
     if order["service_identifier"] == "views_by_followers":
         service_label = "Auto Follower Views"
         per_post = order.get("views_per_post", 0)
+        per_post_label = "Views"
     else:
         service_label = "Auto Follower Reactions"
         per_post = order.get("reactions_per_post", 0)
+        per_post_label = "Reactions"
 
-    # Calculate base delay seconds based on speed
-    if speed_multiplier == 0.5:
-        base_delay_sec = 26
-        base_delay_str = "25-27s"
-    elif speed_multiplier == 1.0:
-        base_delay_sec = 19
-        base_delay_str = "19-20s"
-    elif speed_multiplier == 1.5:
-        base_delay_sec = 12
-        base_delay_str = "12-13s"
-    else:
-        base_delay_sec = 9
-        base_delay_str = "9-10s"
-
-    total_delay_sec = base_delay_sec + custom_delay
-    adj_str = f" ({custom_delay:+d}s custom)" if custom_delay != 0 else ""
-    hours, minutes = estimate_delivery_duration(per_post, speed_multiplier, 1)
-    time_str = ""
-    if hours > 0:
-        time_str += f"{hours}h "
-    time_str += f"{minutes}m"
+    total_delay_sec = get_order_delay_seconds(order)
+    base_delay_sec = get_base_delay_seconds(speed_multiplier)
+    custom_adjustment = total_delay_sec - base_delay_sec
+    adj_str = f" ({custom_adjustment:+d}s custom)" if custom_adjustment != 0 else ""
+    remaining_today_posts, daily_quantity, daily_eta = get_daily_delivery_snapshot(order, per_post)
 
     # Night mode note
     night_note = ""
@@ -2840,43 +2901,19 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
         f"🆔 <b>Channel ID:</b> {channel_id}\n"
         f"📛 <b>Channel Name:</b> {channel_title}\n"
         f"🔗 <b>Channel Username:</b> @{channel_title}\n"
-        f"👀 <b>Views per Post:</b> {per_post}\n"
+        f"👀 <b>{per_post_label} per Post:</b> {per_post}\n"
         f"📝 <b>Posts per Day:</b> {posts_per_day}\n"
         f"🔀 <b>Random Views:</b> {random_views}\n"
         f"🔔 <b>Mute/Unmute:</b> {mute_str}\n"
         f"📅 <b>Number of Days Left:</b> {days_remaining}\n"
-        f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Delivers {per_post} in {time_str})\n"
+        f"⏳ <b>Delay:</b> {total_delay_sec}s{adj_str} (Today {daily_quantity} {per_post_label.lower()} in {daily_eta})\n"
         f"📉 <b>High ➔ Low (Descending Views):</b> {high_low_str}\n"
         f"🌙 <b>Night Mode:</b> {night_str}"
         f"{night_note}"
     )
 
     if order["status"] != "completed":
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"edit_settings:{order['_id']}"),
-            InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
-            InlineKeyboardButton(text="Edit Random Views", callback_data=f"edit_random:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text="🔔 Mute/Unmute", callback_data=f"toggle_mute:{order['_id']}"),
-            InlineKeyboardButton(text="🔘 Auto Poll/Votes", callback_data=f"auto_poll:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text=f"🌙 Night Mode: {night_str}", callback_data=f"night_mode:{order['_id']}"),
-            InlineKeyboardButton(text="❌ Cancel Subscription", callback_data=f"cancel_order:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu")
-        )
-        markup = builder.as_markup()
+        markup = get_order_control_markup(order, is_paused, high_low_str, night_str)
     else:
         markup = None
 
@@ -2930,44 +2967,14 @@ async def open_speed_menu(callback: types.CallbackQuery):
 # ===== DYNAMIC DELAY ADJUSTMENT =====
 @dp.callback_query(F.data.startswith("edit_settings:"))
 async def edit_order_settings(callback: types.CallbackQuery):
-    """Show delay adjustment options with Hours, Minutes, Seconds"""
+    """Show delay adjustment options for today's deliverable quantity."""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
     
-    # Get custom delay in seconds (default 19s)
-    total_delay_seconds = order.get("custom_delay_seconds", 19)
-    
-    # Convert to hours, minutes, seconds
-    hours = total_delay_seconds // 3600
-    minutes = (total_delay_seconds % 3600) // 60
-    seconds = total_delay_seconds % 60
-    
-    # Get order quantity (views or reactions)
-    quantity = order.get("quantity", 0)
-    if quantity == 0:
-        # For followers-based orders
-        quantity = order.get("total_views", 0) or order.get("total_reactions", 0)
-    
-    # Get delivered count
-    delivered = order.get("delivered_views", 0) or order.get("delivered_reactions", 0)
-    remaining = max(0, quantity - delivered)
-    
-    # Calculate estimated delivery time
-    clients_count = len(active_clients) if active_clients else 1
-    
-    # Total time for remaining items
-    total_seconds_remaining = (remaining / max(clients_count, 1)) * total_delay_seconds
-    hours_remaining = int(total_seconds_remaining // 3600)
-    minutes_remaining = int((total_seconds_remaining % 3600) // 60)
-    seconds_remaining = int(total_seconds_remaining % 60)
-    
-    time_remaining_str = f"{hours_remaining}h {minutes_remaining}m {seconds_remaining}s"
-    
-    # Total estimated delivery time for all items
-    total_time_all = calculate_delivery_time(quantity, total_delay_seconds, clients_count)
+    total_delay_seconds = get_order_delay_seconds(order)
     
     builder = InlineKeyboardBuilder()
     
@@ -2978,10 +2985,12 @@ async def edit_order_settings(callback: types.CallbackQuery):
     service_identifier = order.get('service_identifier', '')
     if 'view' in service_identifier.lower():
         service_type = 'views'
-        service_label = 'view'
+        per_post_qty = int(order.get("views_per_post", 0) or 0)
     else:
         service_type = 'reactions'
-        service_label = 'reaction'
+        per_post_qty = int(order.get("reactions_per_post", 0) or 0)
+
+    remaining_today_posts, daily_quantity, daily_eta = get_daily_delivery_snapshot(order, per_post_qty)
     
     # Simple -1s and +1s buttons
     builder.row(
@@ -2994,7 +3003,8 @@ async def edit_order_settings(callback: types.CallbackQuery):
     
     text = (
         f"<b>Delay {delay_display}</b>\n\n"
-        f"⏳ You will receive {quantity} {service_type} in {total_time_all}"
+        f"⏳ Today remaining: {remaining_today_posts} post(s)\n"
+        f"📦 You will receive {daily_quantity} {service_type} in {daily_eta}"
     )
     
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
@@ -3046,12 +3056,17 @@ async def show_edit_interface(message, state: FSMContext, order_id):
     new_posts = data.get("new_posts_per_day", 0)
     new_days = data.get("new_days", 0)
     delivered = data.get("delivered_amount", 0)
+    service_type = data.get("service_type")
+    metric_label = "Reactions" if service_type == "reactions_by_followers" else "Views"
+    max_limit = get_per_post_limit()
+    new_views = clamp_per_post_quantity(new_views)
+    await state.update_data(new_views_per_post=new_views)
     
     original_total = data.get("original_total_views", 0)
     new_total = new_views * new_posts * new_days
     
     # Calculate pricing
-    is_reactions = data.get("service_type") == "reactions_by_followers"
+    is_reactions = service_type == "reactions_by_followers"
     if is_reactions:
         original_price = await calculate_reactions_charge(
             data.get("original_views_per_post"),
@@ -3095,9 +3110,9 @@ async def show_edit_interface(message, state: FSMContext, order_id):
     text = (
         f"⚙️ <b>Edit Order Settings</b>\n"
         f"<i>Note: केवल service बढ़ाई जा सकती है</i>\n\n"
-        f"<b>📊 Max Views Limit:</b> 5050\n\n"
-        f"📊 <b>Total Views:</b> {new_total}\n"
-        f"👀 <b>Views per Post:</b> {new_views}\n"
+        f"<b>📊 Max {metric_label} Limit:</b> {max_limit}\n\n"
+        f"📊 <b>Total {metric_label}:</b> {new_total}\n"
+        f"👀 <b>{metric_label} per Post:</b> {new_views}\n"
         f"📝 <b>Posts Per Day:</b> {new_posts}\n"
         f"📅 <b>No. of Days:</b> {new_days}\n\n"
         f"{price_text}"
@@ -3107,7 +3122,7 @@ async def show_edit_interface(message, state: FSMContext, order_id):
     builder = InlineKeyboardBuilder()
     
     # Total Views section - only increase buttons
-    builder.row(InlineKeyboardButton(text=f"📊 Total Views: {new_total}", callback_data="info:total"))
+    builder.row(InlineKeyboardButton(text=f"📊 Total {metric_label}: {new_total}", callback_data="info:total"))
     builder.row(
         InlineKeyboardButton(text="+10", callback_data=f"edit_adjust:views:10"),
         InlineKeyboardButton(text="+100", callback_data=f"edit_adjust:views:100"),
@@ -3155,7 +3170,10 @@ async def edit_order_parameters(callback: types.CallbackQuery, state: FSMContext
         return await callback.answer("❌ Order not found.", show_alert=True)
     
     # Get current parameters
-    views_per_post = order.get("views_per_post", 0)
+    service_type = order.get("service_identifier")
+    per_post_field = "reactions_per_post" if service_type == "reactions_by_followers" else "views_per_post"
+    views_per_post = int(order.get(per_post_field, 0) or 0)
+    views_per_post = clamp_per_post_quantity(views_per_post)
     posts_per_day = order.get("posts_per_day", 0)
     days = order.get("days", 0)
     delivered = await get_delivered_amount(order)
@@ -3166,7 +3184,8 @@ async def edit_order_parameters(callback: types.CallbackQuery, state: FSMContext
     # Store in state
     await state.update_data(
         order_id=str(order_id),
-        service_type=order.get("service_identifier"),
+        service_type=service_type,
+        per_post_field=per_post_field,
         original_views_per_post=views_per_post,
         original_posts_per_day=posts_per_day,
         original_days=days,
@@ -3199,13 +3218,13 @@ async def edit_adjustment_handler(callback: types.CallbackQuery, state: FSMConte
     
     # Apply adjustment based on type
     if param_type == "views":
-        new_views = max(0, new_views + adjustment)
+        new_views = clamp_per_post_quantity(new_views + adjustment)
         await state.update_data(new_views_per_post=new_views)
     elif param_type == "posts":
-        new_posts = max(0, new_posts + adjustment)
+        new_posts = max(1, new_posts + adjustment)
         await state.update_data(new_posts_per_day=new_posts)
     elif param_type == "days":
-        new_days = max(0, new_days + adjustment)
+        new_days = max(1, new_days + adjustment)
         await state.update_data(new_days=new_days)
     
     # Refresh interface
@@ -3228,6 +3247,8 @@ async def confirm_edit_handler(callback: types.CallbackQuery, state: FSMContext)
     new_posts = data.get("new_posts_per_day", 0)
     new_days = data.get("new_days", 0)
     delivered = data.get("delivered_amount", 0)
+    per_post_field = data.get("per_post_field", "views_per_post")
+    metric_label = "Reactions" if data.get("service_type") == "reactions_by_followers" else "Views"
     
     new_total = new_views * new_posts * new_days
     original_total = data.get("original_total_views", 0)
@@ -3288,7 +3309,7 @@ async def confirm_edit_handler(callback: types.CallbackQuery, state: FSMContext)
         {"_id": ObjectId(order_id)},
         {
             "$set": {
-                "views_per_post": new_views,
+                per_post_field: new_views,
                 "posts_per_day": new_posts,
                 "days": new_days,
                 "updated_at": datetime.utcnow()
@@ -3312,10 +3333,10 @@ async def confirm_edit_handler(callback: types.CallbackQuery, state: FSMContext)
     await callback.message.edit_text(
         f"✅ <b>Order Updated Successfully!</b>\n\n"
         f"📊 <b>New Settings:</b>\n"
-        f"👀 Views per Post: {new_views}\n"
+        f"👀 {metric_label} per Post: {new_views}\n"
         f"📝 Posts per Day: {new_posts}\n"
         f"📅 Days: {new_days}\n"
-        f"📊 Total Views: {new_total}\n\n"
+        f"📊 Total {metric_label}: {new_total}\n\n"
         f"{balance_msg}",
         parse_mode="HTML"
     )
@@ -3657,36 +3678,54 @@ async def cancel_order_callback(callback: types.CallbackQuery, state: FSMContext
     await callback.message.delete() # Remove the original message
     # Optionally, you can send a message back to the user indicating cancellation
 
-@dp.message(OrderStates.SELECTING_CHANNEL)
-async def handle_channel_selection(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    channels = data.get('available_channels', [])
-    selected_title = message.text.replace("📢 ", "")
+def get_order_control_markup(order, is_paused: bool, high_low_str: str, night_str: str):
+    """Unified controls for auto orders."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="⚙️ Edit Settings", callback_data=f"edit_order_params:{order['_id']}"),
+        InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"edit_settings:{order['_id']}"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"resume:{order['_id']}" if is_paused else f"pause:{order['_id']}"),
+        InlineKeyboardButton(text="⚡ Change Speed", callback_data=f"show_speed_options:{order['_id']}"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text=f"High➔Low- {high_low_str}", callback_data=f"toggle_highlow:{order['_id']}"),
+        InlineKeyboardButton(text="Edit Random Views", callback_data=f"edit_random:{order['_id']}"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔔 Mute/Unmute", callback_data=f"toggle_mute:{order['_id']}"),
+        InlineKeyboardButton(text="🔘 Auto Poll/Votes", callback_data=f"auto_poll:{order['_id']}"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text=f"🌙 Night Mode: {night_str}", callback_data=f"night_mode:{order['_id']}"),
+        InlineKeyboardButton(text="❌ Cancel Subscription", callback_data=f"cancel_order:{order['_id']}"),
+        width=2
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu"))
+    return builder.as_markup()
 
-    selected_channel = next((ch for ch in channels if ch['channel_title'] == selected_title), None)
 
-    if not selected_channel:
-        await message.answer("❌ Invalid channel selection. Please choose from the list.")
-        return
-
-    channel_id = selected_channel['channel_id']
-    channel_title = selected_channel['channel_title']
-
+async def show_channel_order_details(chat_id: int, user_id: int, channel_id: int, channel_title: str):
     orders = await orders_collection.find({
+        "user_id": user_id,
         "channel_id": channel_id,
         "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
         "status": {"$in": ["confirmed", "processing"]}
     }).sort("created_at", -1).to_list(None)
 
     if not orders:
-        await message.answer(
+        await bot.send_message(
+            chat_id,
             f"ℹ️ No auto orders found for channel: {channel_title}",
             reply_markup=get_main_menu_keyboard()
         )
-        await state.clear()
         return
 
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
     now = datetime.utcnow()
 
     for order in orders:
@@ -3699,54 +3738,45 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
         is_paused = order.get("is_paused", False)
 
         if order["status"] == "completed":
-            continue # Skip completed orders
+            continue
 
-        remaining_today_posts = 0
-        if order.get("processed_today"):
-            posts_done_today = len(order.get("processed_today", {}).get(today_str, []))
-            remaining_today_posts = max(0, posts_per_day - posts_done_today)
-        else:
-            remaining_today_posts = posts_per_day # If processed_today is not set yet, assume all are remaining
-
-        # Status line
         if is_paused:
             status_text = "⏸ <i>This campaign is currently paused.</i>"
         else:
             status_text = "▶️ <i>Your campaign is currently active.</i>"
 
-        # Compose message
         speed_multiplier = order.get("speed_multiplier", 1.0)
         speed_name, speed_emoji = get_speed_name(speed_multiplier)
         is_muted = order.get("is_muted", False)
         mute_text = "🔕 ON" if is_muted else "🔔 OFF"
         night_mode = order.get("night_mode_enabled", False)
         night_text = "🌙 ON" if night_mode else "🌙 OFF"
-        custom_delay = order.get("custom_delay", 0)
+        high_low = order.get("high_low_descending", False)
+        high_low_str = "🟢 ON" if high_low else "🔴 OFF"
 
-        # Calculate delay with custom adjustment
-        per_post_qty = order.get('views_per_post', order.get('reactions_per_post', 0))
-        if speed_multiplier == 0.5:
-            base_delay_sec = 26
-        elif speed_multiplier == 1.0:
-            base_delay_sec = 19
-        elif speed_multiplier == 1.5:
-            base_delay_sec = 12
+        if order["service_identifier"] == "views_by_followers":
+            per_post_qty = order.get("views_per_post", 0)
+            metric_label = "Views"
+            service_name = "views_by_followers"
         else:
-            base_delay_sec = 9
-        total_delay_sec = base_delay_sec + custom_delay
-        adj_str = f" ({custom_delay:+d}s custom)" if custom_delay != 0 else ""
-        clients_count = len(active_clients) or 1
-        hours, minutes = estimate_delivery_duration(per_post_qty, speed_multiplier, clients_count)
-        time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
-        delay_info = f"Delay: {total_delay_sec}s{adj_str} (Delivers {per_post_qty} in {time_str})"
+            per_post_qty = order.get("reactions_per_post", 0)
+            metric_label = "Reactions"
+            service_name = "reactions_by_followers"
+
+        total_delay_sec = get_order_delay_seconds(order)
+        base_delay_sec = get_base_delay_seconds(speed_multiplier)
+        custom_adjustment = total_delay_sec - base_delay_sec
+        adj_str = f" ({custom_adjustment:+d}s custom)" if custom_adjustment != 0 else ""
+        remaining_today_posts, daily_quantity, daily_eta = get_daily_delivery_snapshot(order, per_post_qty)
+        delay_info = f"Delay: {total_delay_sec}s{adj_str} (Today {daily_quantity} {metric_label.lower()} in {daily_eta})"
 
         night_note = "\n🌙 <i>Night Mode: delivery ÷3 during 11 PM–7 AM IST</i>" if night_mode else ""
 
         text = (
             f"📢 <b>Channel:</b> <i>{channel_title}</i> <code>(ID: {channel_id})</code>\n\n"
-            f"🎯 <b>Service:</b> <code>{order.get('service_identifier', 'Unknown')}</code>\n"
+            f"🎯 <b>Service:</b> <code>{service_name}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Per Post:</b> <code>{per_post_qty}</code>\n"
+            f"📊 <b>{metric_label} Per Post:</b> <code>{per_post_qty}</code>\n"
             f"📝 <b>Daily Posts:</b> <code>{posts_per_day}</code>\n"
             f"📆 <b>Plan Duration:</b> <code>{days} Days</code>\n"
             f"{speed_emoji} <b>Speed:</b> <code>{speed_name}</code>\n"
@@ -3762,23 +3792,30 @@ async def handle_channel_selection(message: types.Message, state: FSMContext):
             f"{night_note}"
         )
 
-        # Buttons
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(text="▶️ Resume" if is_paused else "⏸ Pause", callback_data=f"{'resume' if is_paused else 'pause'}:{order['_id']}"),
-            InlineKeyboardButton(text="🔕 Unmute" if is_muted else "🔔 Mute", callback_data=f"toggle_mute:{order['_id']}"),
-            width=2
-        )
-        builder.row(
-            InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}"),
-            width=1
-        )
+        markup = get_order_control_markup(order, is_paused, high_low_str, night_text)
+        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
-        markup = builder.as_markup()
+    await bot.send_message(chat_id, "Main Menu", reply_markup=get_main_menu_keyboard())
 
-        await message.answer(text, parse_mode="HTML", reply_markup=markup)
-    await message.answer('Main Menu', reply_markup=get_main_menu_keyboard())
 
+@dp.message(OrderStates.SELECTING_CHANNEL)
+async def handle_channel_selection(message: types.Message, state: FSMContext):
+    """Legacy text-based selection support."""
+    data = await state.get_data()
+    channels = data.get('available_channels', [])
+    selected_title = message.text.replace("📢 ", "")
+
+    selected_channel = next((ch for ch in channels if ch['channel_title'] == selected_title), None)
+    if not selected_channel:
+        await message.answer("❌ Invalid channel selection. Please choose from the list.")
+        return
+
+    await show_channel_order_details(
+        chat_id=message.chat.id,
+        user_id=message.from_user.id,
+        channel_id=selected_channel['channel_id'],
+        channel_title=selected_channel['channel_title']
+    )
     await state.clear()
 
 
@@ -4449,6 +4486,7 @@ async def handle_views_adjustment(callback: types.CallbackQuery, state: FSMConte
 
     try:
         field, value = callback.data.split(":")
+        max_limit = get_per_post_limit()
 
         if field == "speed":
             # Handle speed adjustment
@@ -4469,15 +4507,16 @@ async def handle_views_adjustment(callback: types.CallbackQuery, state: FSMConte
 
             if field == "views":
                 new_total = config.total_views + value
-                if new_total < 10:
+                if new_total < 1:
                     raise ValueError("Below minimum")
-                # No max limit check - unlimited
+                if new_total > max_limit:
+                    raise OverflowError("Above max limit")
                 config.total_views = new_total
 
             elif field == "posts":
-                config.posts_per_day = max(10, config.posts_per_day + value)
+                config.posts_per_day = max(1, config.posts_per_day + value)
             elif field == "days":
-                config.days = max(10, config.days + value)
+                config.days = max(1, config.days + value)
 
         # Calculate base charge (speed is FREE, no multiplier applied)
         base_charge = await calculate_views_charge(
@@ -4499,6 +4538,8 @@ async def handle_views_adjustment(callback: types.CallbackQuery, state: FSMConte
         )
         await callback.answer()
 
+    except OverflowError:
+        await callback.answer(f"❌ Max limit reached: {get_per_post_limit()} (available accounts)", show_alert=True)
     except Exception:
         await callback.answer("❌ Minimum order value reached!", show_alert=True)
 
@@ -4514,6 +4555,7 @@ async def handle_reaction_adjustment(callback: types.CallbackQuery, state: FSMCo
 
     try:
         field, value = callback.data.split(":")
+        max_limit = get_per_post_limit()
 
         if field == "r_speed":
             # Handle speed adjustment for reactions — uses separate r_speed: prefix
@@ -4536,15 +4578,16 @@ async def handle_reaction_adjustment(callback: types.CallbackQuery, state: FSMCo
                 if not hasattr(config, "total_reactions"):
                     config.total_reactions = config.total_views
                 new_total = config.total_reactions + value
-                if new_total < 10:
+                if new_total < 1:
                     raise ValueError("Below minimum")
-                # No max limit check - unlimited
+                if new_total > max_limit:
+                    raise OverflowError("Above max limit")
                 config.total_reactions = new_total
 
             elif field == "r_posts":
-                config.posts_per_day = max(10, config.posts_per_day + value)
+                config.posts_per_day = max(1, config.posts_per_day + value)
             elif field == "r_days":
-                config.days = max(10, config.days + value)
+                config.days = max(1, config.days + value)
 
         # Calculate base charge (speed is FREE, no multiplier applied)
         if hasattr(config, "total_reactions"):
@@ -4574,6 +4617,8 @@ async def handle_reaction_adjustment(callback: types.CallbackQuery, state: FSMCo
         )
         await callback.answer()
 
+    except OverflowError:
+        await callback.answer(f"❌ Max limit reached: {get_per_post_limit()} (available accounts)", show_alert=True)
     except Exception as e:
         print(f"Error in reaction adjustment: {e}")
         await callback.answer("❌ Minimum order value reached!", show_alert=True)
@@ -4591,11 +4636,12 @@ async def handle_order(callback: types.CallbackQuery, state: FSMContext):
 
     service_identifier = "reactions_by_followers" if is_reactions else "views_by_followers"
     order_type = "Reactions" if is_reactions else "Views"
+    per_post_value = config.total_reactions if is_reactions else config.total_views
 
     await callback.message.edit_text(
         f"📝 {order_type} Order Summary\n\n"
         f"🔹 Channel: {config.channel_title}\n"
-        f"🔹 Total {order_type}: {config.total_views}\n"
+        f"🔹 {order_type} Per Post: {per_post_value}\n"
         f"🔹 Posts/Day: {config.posts_per_day}\n"
         f"🔹 Duration: {config.days} days\n\n"
         f"💰 Total Charge: ${config.charge:.4f} ({await usd_to_inr_converter(config.charge)})\n\n"
@@ -4631,26 +4677,35 @@ async def handle_show_info(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "payment:confirm")
 async def handle_payment_confirm(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
+
+    # Prevent duplicate order creation from rapid/spam button clicks
+    if user_id in payment_processing_users:
+        return await callback.answer("⏳ Your order is already being processed, please wait...", show_alert=True)
+
     config = user_configs.get(user_id)
     if not config:
         return await callback.answer("Session expired. Please start again.", show_alert=True)
 
-    # Check user balance
-    user = await users_collection.find_one({"user_id": user_id})
-    if not user:
-        await callback.answer("User not found. Please start again.")
-        await state.clear()
-        return
+    # Lock this user from submitting another payment until this one finishes
+    payment_processing_users.add(user_id)
 
-    if user.get('balance', 0) < config.charge:
-        return await callback.answer("❌ Insufficient balance. Please add funds to your account.", show_alert=True)
+    try:
+        # Check user balance
+        user = await users_collection.find_one({"user_id": user_id})
+        if not user:
+            await callback.answer("User not found. Please start again.")
+            await state.clear()
+            return
 
-    # Get service identifier
-    data = await state.get_data()
-    service_identifier = data.get('service_identifier', 'views_by_followers')
+        if user.get('balance', 0) < config.charge:
+            return await callback.answer("❌ Insufficient balance. Please add funds to your account.", show_alert=True)
 
-    # === Construct Order ===
-    order_data = {
+        # Get service identifier
+        data = await state.get_data()
+        service_identifier = data.get('service_identifier', 'views_by_followers')
+
+        # === Construct Order ===
+        order_data = {
         "user_id": user_id,
         "service_identifier": service_identifier,
         "service_type": "by_followers",
@@ -4663,69 +4718,74 @@ async def handle_payment_confirm(callback: types.CallbackQuery, state: FSMContex
         "is_paused": False,
         "speed_multiplier": config.speed_multiplier,
         "speed_name": config.speed_name,
+        "custom_delay_seconds": get_base_delay_seconds(config.speed_multiplier),
         "created_at": datetime.utcnow(),
         "processed_today": {}, # Initialize for daily tracking
         "total_posts_processed": 0, # Initialize for total posts tracked
     }
 
-    if service_identifier == "views_by_followers":
-        order_data.update({
-            "views_per_post": config.total_views,
-            "total_views": config.final_total_views,
-            "delivered_views": 0
-        })
-        metric = "Views"
-        service_name = "Views By Followers"
-    else: # reactions_by_followers
-        order_data.update({
-            "reactions_per_post": config.total_reactions if hasattr(config, "total_reactions") else config.total_views, # Use total_reactions if available, else default to views_per_post
-            "total_reactions": config.final_total_reactions,
-            "delivered_reactions": 0
-        })
-        metric = "Reactions"
-        service_name = "Reactions By Followers"
+        if service_identifier == "views_by_followers":
+            order_data.update({
+                "views_per_post": config.total_views,
+                "total_views": config.final_total_views,
+                "delivered_views": 0
+            })
+            metric = "Views"
+            service_name = "Views By Followers"
+        else: # reactions_by_followers
+            order_data.update({
+                "reactions_per_post": config.total_reactions if hasattr(config, "total_reactions") else config.total_views,
+                "total_reactions": config.final_total_reactions,
+                "delivered_reactions": 0
+            })
+            metric = "Reactions"
+            service_name = "Reactions By Followers"
 
-    # === Save Order ===
-    result = await orders_collection.insert_one(order_data)
-    order_id = result.inserted_id
+        # === Save Order ===
+        result = await orders_collection.insert_one(order_data)
+        order_id = result.inserted_id
 
-    # Deduct balance
-    await update_user_balance(user_id, -config.charge)
+        # Deduct balance
+        await update_user_balance(user_id, -config.charge)
 
-    speed_emoji = "🐌" if config.speed_multiplier == 0.5 else ("🐢" if config.speed_multiplier == 1.0 else ("🚀" if config.speed_multiplier == 1.5 else "⚡"))
+        speed_emoji = "🐌" if config.speed_multiplier == 0.5 else ("🐢" if config.speed_multiplier == 1.0 else ("🚀" if config.speed_multiplier == 1.5 else "⚡"))
 
-    # Get correct per-post value
-    if service_identifier == "reactions_by_followers":
-        per_post_value = config.total_reactions if hasattr(config, 'total_reactions') else config.total_views
-    else:
-        per_post_value = config.total_views
+        # Get correct per-post value
+        if service_identifier == "reactions_by_followers":
+            per_post_value = config.total_reactions if hasattr(config, 'total_reactions') else config.total_views
+        else:
+            per_post_value = config.total_views
 
-    await callback.message.edit_text(
-        f"✅ <b>Order Confirmed!</b>\n"
+        await callback.message.edit_text(
+            f"✅ <b>Order Confirmed!</b>\n"
 
-        f"⚪️ <b>Order ID:</b> <code>{str(order_id)}</code>\n"
-        f"🖥️ <b>Service:</b> <code>{service_name}</code>\n"
-        f"🆔 <b>Channel:</b> {'Private Channel' if config.channel_id < 0 else 'Public Channel'} "
-        f"(ID: <code>{config.channel_id}</code>)\n\n"
+            f"⚪️ <b>Order ID:</b> <code>{str(order_id)}</code>\n"
+            f"🖥️ <b>Service:</b> <code>{service_name}</code>\n"
+            f"🆔 <b>Channel:</b> {'Private Channel' if config.channel_id < 0 else 'Public Channel'} "
+            f"(ID: <code>{config.channel_id}</code>)\n\n"
 
-        f"👁️ <b>{metric} Per Post:</b> <code>{per_post_value}</code>\n"
-        f"📝 <b>Post Per Day:</b> <code>{config.posts_per_day}</code>\n"
-        f"⏳ <b>Duration:</b> <code>{config.days} Days</code>\n"
-        f"{speed_emoji} <b>Speed:</b> <code>{config.speed_name}</code> (x{config.speed_multiplier})\n\n"
+            f"👁️ <b>{metric} Per Post:</b> <code>{per_post_value}</code>\n"
+            f"📝 <b>Post Per Day:</b> <code>{config.posts_per_day}</code>\n"
+            f"⏳ <b>Duration:</b> <code>{config.days} Days</code>\n"
+            f"{speed_emoji} <b>Speed:</b> <code>{config.speed_name}</code> (x{config.speed_multiplier})\n\n"
 
-        f"💰 <b>Charge:</b> <code>${config.charge:.4f}</code>\n\n"
+            f"💰 <b>Charge:</b> <code>${config.charge:.4f}</code>\n\n"
 
-        f"🔄 <i>Auto-service started! {metric.capitalize()} will be delivered at {config.speed_name} speed.</i>",
-        parse_mode="HTML"
-    )
+            f"🔄 <i>Auto-service started! {metric.capitalize()} will be delivered at {config.speed_name} speed.</i>",
+            parse_mode="HTML"
+        )
 
-    invite_link = getattr(config, 'invite_link', None)
-    if invite_link and active_clients:
-        asyncio.create_task(join_all_clients_to_channel(config.channel_id, invite_link))
+        invite_link = getattr(config, 'invite_link', None)
+        if invite_link and active_clients:
+            asyncio.create_task(join_all_clients_to_channel(config.channel_id, invite_link))
 
-    await callback.message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
-    await callback.answer()
-    await state.clear()
+        await callback.message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
+        await callback.answer()
+        await state.clear()
+
+    finally:
+        # Always release the lock so user can place a new order later
+        payment_processing_users.discard(user_id)
 
 
 @dp.callback_query(F.data == "payment:cancel")
@@ -8057,8 +8117,7 @@ async def ub_moniter():
 async def process_auto_views_master_worker(order, message_id, quantity):
     try:
         channel_id = order['channel_id']
-        # Use custom_delay_seconds if available, otherwise default to 19s
-        delay_seconds = order.get('custom_delay_seconds') or random.uniform(10, 15)
+        delay_seconds = get_order_delay_seconds(order)
 
         print(f"📊 Distributing {quantity} views across {len(active_clients)} clients with {delay_seconds}s delay")
 
@@ -8094,8 +8153,7 @@ async def delayed_view_order(client, channel_id, message_id, delay):
 async def process_auto_reactions_master_worker(order, message_id, quantity):
     try:
         channel_id = order['channel_id']
-        # Use custom_delay_seconds if available, otherwise default to 19s
-        delay_seconds = order.get('custom_delay_seconds') or random.uniform(10, 15)
+        delay_seconds = get_order_delay_seconds(order)
 
         print(f"❤️ Distributing {quantity} reactions across {len(active_clients)} clients with {delay_seconds}s delay")
 
@@ -8137,17 +8195,7 @@ async def delayed_reaction_order(client, channel_id, message_id, emoji, delay):
 # Distributed Poll Votes Delivery - All clients work together (for Auto Poll/Votes)
 async def process_auto_poll_votes_master_worker(order, message_id, channel_id, quantity, poll_options_count):
     try:
-        # Use speed multiplier from order
-        speed_multiplier = order.get("speed_multiplier", 1.0)
-        custom_delay = order.get("custom_delay_seconds", 0)
-        
-        # Calculate base delay seconds based on speed
-        if speed_multiplier == 0.5: base_delay_sec = 26
-        elif speed_multiplier == 1.0: base_delay_sec = 19
-        elif speed_multiplier == 1.5: base_delay_sec = 12
-        else: base_delay_sec = 9
-        
-        delay_seconds = base_delay_sec + custom_delay
+        delay_seconds = get_order_delay_seconds(order)
         
         print(f"🗳️ Distributing {quantity} poll votes across {len(active_clients)} clients with ~{delay_seconds}s delay")
 
