@@ -61,7 +61,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAGix2UgiaXYN9k5hp7u035YI1_QOT4EtxU")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAHLu21pf_5aMlTdU6FazmxALuVmhx50szc")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
@@ -1274,14 +1274,18 @@ def get_channel_select_keyboard():
         resize_keyboard=True
     )
 
-def get_my_channels_keyboard(channels):
-    """Create inline channel picker for My Channels."""
+def get_my_channels_keyboard(channels, active_channel_ids: set = None):
+    """Create inline channel picker for My Channels with green/red status dots."""
+    if active_channel_ids is None:
+        active_channel_ids = set()
     builder = InlineKeyboardBuilder()
     for channel in channels:
+        cid = channel['channel_id']
+        dot = "🟢" if cid in active_channel_ids else "🔴"
         builder.row(
             InlineKeyboardButton(
-                text=f"📢 {channel['channel_title']}",
-                callback_data=f"my_channel:{channel['channel_id']}"
+                text=f"{dot} {channel['channel_title']}",
+                callback_data=f"my_channel:{cid}"
             )
         )
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu"))
@@ -2726,9 +2730,16 @@ async def my_channels_handler(message: types.Message, state: FSMContext):
 
     await state.clear()
 
+    # Find which channels have an active order
+    active_orders = await orders_collection.find({
+        "user_id": user_id,
+        "status": {"$in": ["confirmed", "processing"]}
+    }, {"channel_id": 1}).to_list(None)
+    active_channel_ids = {o["channel_id"] for o in active_orders}
+
     await message.answer(
         "📢 Select a channel to view its order details:",
-        reply_markup=get_my_channels_keyboard(channels)
+        reply_markup=get_my_channels_keyboard(channels, active_channel_ids)
     )
 
 
@@ -3611,71 +3622,211 @@ async def apply_combi_speed(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("cancel_order:"))
-async def cancel_order_callback(callback: types.CallbackQuery, state: FSMContext):
+async def cancel_order_callback(callback: types.CallbackQuery):
+    """Step 1: Ask user for confirmation before cancelling."""
     order_id = callback.data.split(":")[1]
 
-    # Find the order
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-
     if not order:
-        await callback.answer("Order not found.", show_alert=True)
-        return
+        return await callback.answer("Order not found.", show_alert=True)
 
-    # Check if order is already completed or cancelled
     if order["status"] in ["completed", "cancelled"]:
-        await callback.answer("This order is already completed or cancelled.", show_alert=True)
-        return
+        return await callback.answer("This order is already completed or cancelled.", show_alert=True)
 
-    # Calculate partial refund
-    charge = order.get("charge", 0.0)
-    created_at = order.get("created_at")
-    days = order.get("days", 0)
-    now = datetime.utcnow()
-
-    if days > 0:
-        # Calculate portion delivered based on days passed
-        days_passed = (now - created_at).days
-        delivery_progress = min(1.0, max(0.0, days_passed / days))
+    service_id = order.get("service_identifier", "")
+    if service_id == "views_by_followers":
+        service_label = "Views By Followers"
+    elif service_id == "reactions_by_followers":
+        service_label = "Reactions By Followers"
     else:
-        delivery_progress = 0.0  # Avoid division by zero if days is 0
+        service_label = "Poll Votes"
 
-    # Calculate the cost of delivered service (pro-rated)
-    cost_of_delivered_service = charge * delivery_progress
+    channel_title = order.get("channel_title", "Unknown Channel")
 
-    # Calculate the refund amount
-    refund_amount = charge - cost_of_delivered_service
-
-    # Update order status to 'cancelled' and set refund amount
-    await orders_collection.update_one(
-        {"_id": ObjectId(order_id)},
-        {
-            "$set": {
-                "status": "cancelled",
-                "cancellation_time": now,
-                "refund_amount": round(refund_amount, 4),
-                "updated_at": now
-            }
-        }
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Yes, Cancel", callback_data=f"cancel_confirm_yes:{order_id}"),
+        InlineKeyboardButton(text="❌ No, Go Back", callback_data=f"cancel_confirm_no:{order_id}"),
+        width=2
     )
 
-    # Grant refund to user balance
+    await callback.message.edit_text(
+        f"⚠️ <b>Cancel Subscription?</b>\n\n"
+        f"📢 <b>Channel:</b> {channel_title}\n"
+        f"🎯 <b>Service:</b> {service_label}\n\n"
+        f"Are you sure you want to cancel this service?\n"
+        f"A partial refund will be calculated based on what has been delivered so far.",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("cancel_confirm_no:"))
+async def cancel_confirm_no_callback(callback: types.CallbackQuery):
+    """User chose not to cancel — go back to order details."""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("Order not found.", show_alert=True)
+
+    channel_id = order.get("channel_id")
+    channel_title = order.get("channel_title", "Unknown Channel")
+    user_id = callback.from_user.id
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await show_channel_order_details(
+        chat_id=callback.message.chat.id,
+        user_id=user_id,
+        channel_id=channel_id,
+        channel_title=channel_title
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("cancel_confirm_yes:"))
+async def cancel_confirm_yes_callback(callback: types.CallbackQuery):
+    """Step 2: Show delivery details and refund breakdown, ask for final confirmation."""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("Order not found.", show_alert=True)
+
+    if order["status"] in ["completed", "cancelled"]:
+        return await callback.answer("This order is already completed or cancelled.", show_alert=True)
+
+    charge = order.get("charge", 0.0)
+    service_id = order.get("service_identifier", "")
+    channel_title = order.get("channel_title", "Unknown")
+    now = datetime.utcnow()
+
+    # Determine delivered vs total
+    if service_id == "views_by_followers":
+        delivered = order.get("delivered_views", 0)
+        total = order.get("total_views", 0) or (order.get("views_per_post", 0) * order.get("posts_per_day", 0) * order.get("days", 0))
+        metric = "Views"
+        service_label = "Views By Followers"
+    elif service_id == "reactions_by_followers":
+        delivered = order.get("delivered_reactions", 0)
+        total = order.get("total_reactions", 0) or (order.get("reactions_per_post", 0) * order.get("posts_per_day", 0) * order.get("days", 0))
+        metric = "Reactions"
+        service_label = "Reactions By Followers"
+    else:
+        delivered = order.get("delivered_votes", 0)
+        total = order.get("quantity", 0)
+        metric = "Votes"
+        service_label = "Poll Votes"
+
+    # Calculate refund
+    if total > 0:
+        delivery_progress = min(1.0, max(0.0, delivered / total))
+    else:
+        created_at = order.get("created_at", now)
+        days = order.get("days", 1)
+        days_passed = (now - created_at).days
+        delivery_progress = min(1.0, max(0.0, days_passed / days))
+
+    cost_delivered = round(charge * delivery_progress, 4)
+    refund_amount = round(charge - cost_delivered, 4)
+    remaining = max(0, total - delivered)
+
+    refund_inr = await usd_to_inr_converter(refund_amount)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Confirm Cancel", callback_data=f"cancel_final:{order_id}"),
+        InlineKeyboardButton(text="🔙 Go Back", callback_data=f"cancel_confirm_no:{order_id}"),
+        width=2
+    )
+
+    await callback.message.edit_text(
+        f"📋 <b>Cancellation Summary</b>\n\n"
+        f"📢 <b>Channel:</b> {channel_title}\n"
+        f"🎯 <b>Service:</b> {service_label}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 <b>Total {metric} Ordered:</b> <code>{total}</code>\n"
+        f"✅ <b>Delivered:</b> <code>{delivered}</code>\n"
+        f"⏳ <b>Remaining:</b> <code>{remaining}</code>\n\n"
+        f"💵 <b>Total Paid:</b> <code>${charge:.4f}</code>\n"
+        f"📉 <b>Cost of Delivered:</b> <code>${cost_delivered:.4f}</code>\n"
+        f"💰 <b>Refund Amount:</b> <code>${refund_amount:.4f}</code> (<b>{refund_inr}</b>)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Press <b>Confirm Cancel</b> to finalize. The refund will be added to your balance immediately.",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("cancel_final:"))
+async def cancel_final_callback(callback: types.CallbackQuery):
+    """Step 3: Actually cancel the order and process refund."""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("Order not found.", show_alert=True)
+
+    if order["status"] in ["completed", "cancelled"]:
+        return await callback.answer("This order is already completed or cancelled.", show_alert=True)
+
+    charge = order.get("charge", 0.0)
+    service_id = order.get("service_identifier", "")
+    now = datetime.utcnow()
+
+    if service_id == "views_by_followers":
+        delivered = order.get("delivered_views", 0)
+        total = order.get("total_views", 0) or (order.get("views_per_post", 0) * order.get("posts_per_day", 0) * order.get("days", 0))
+    elif service_id == "reactions_by_followers":
+        delivered = order.get("delivered_reactions", 0)
+        total = order.get("total_reactions", 0) or (order.get("reactions_per_post", 0) * order.get("posts_per_day", 0) * order.get("days", 0))
+    else:
+        delivered = order.get("delivered_votes", 0)
+        total = order.get("quantity", 0)
+
+    if total > 0:
+        delivery_progress = min(1.0, max(0.0, delivered / total))
+    else:
+        created_at = order.get("created_at", now)
+        days = order.get("days", 1)
+        days_passed = (now - created_at).days
+        delivery_progress = min(1.0, max(0.0, days_passed / days))
+
+    cost_delivered = round(charge * delivery_progress, 4)
+    refund_amount = round(charge - cost_delivered, 4)
+
+    # Cancel the order in DB
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {
+            "status": "cancelled",
+            "cancellation_time": now,
+            "refund_amount": refund_amount,
+            "updated_at": now
+        }}
+    )
+
+    # Credit refund to user balance
     if refund_amount > 0:
         await update_user_balance(order["user_id"], refund_amount)
 
-    # Notify user
-    await bot.send_message(
-        order["user_id"],
-        f"✅ <b>Order Cancelled!</b>\n\n"
-        f"ID: <code>{order_id}</code>\n"
-        f"Status: <b>Cancelled</b>\n"
-        f"💰 Refund granted: <b>${refund_amount:.4f}</b>\n\n"
-        "The amount has been added to your balance.",
-        parse_mode="HTML"
-    )
+    refund_inr = await usd_to_inr_converter(refund_amount)
 
-    await callback.answer("Order cancelled successfully!", show_alert=True)
-    await callback.message.delete() # Remove the original message
-    # Optionally, you can send a message back to the user indicating cancellation
+    try:
+        await callback.message.edit_text(
+            f"✅ <b>Subscription Cancelled!</b>\n\n"
+            f"📢 <b>Channel:</b> {order.get('channel_title', 'Unknown')}\n\n"
+            f"💰 <b>Refund Added to Balance:</b> <code>${refund_amount:.4f}</code> (<b>{refund_inr}</b>)\n\n"
+            f"You can start a new service anytime from the main menu.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    await callback.answer("✅ Order cancelled and refund processed!", show_alert=True)
 
 def get_order_control_markup(order, is_paused: bool, high_low_str: str, night_str: str):
     """Unified controls for auto orders."""
