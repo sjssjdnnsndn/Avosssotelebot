@@ -1155,6 +1155,9 @@ def get_main_menu_keyboard():
         ],
         [
             KeyboardButton(text="🗳️ Order Votes")
+        ],
+        [
+            KeyboardButton(text="🆘 Support")
         ]
     ]
     return ReplyKeyboardMarkup(
@@ -1355,6 +1358,10 @@ class VoteOrderStates(StatesGroup):
     WAITING_FOR_OPTION_SELECTION = State()
     WAITING_FOR_QUANTITY = State()
     WAITING_FOR_CONFIRMATION = State()
+
+class SupportStates(StatesGroup):
+    WAITING_FOR_QUERY = State()
+    CONFIRMING_QUERY = State()
 
 # ===== CONFIGURATION CLASS ===== #
 class ConfigData:
@@ -8864,6 +8871,194 @@ async def ensure_client_in_channel_2(client, invite_link: str):
     except Exception as e:
         result["error"] = f"Unexpected error: {str(e)}"
         return result
+
+
+# ===== SUPPORT SYSTEM ===== #
+
+@dp.message(F.text == "🆘 Support")
+async def support_handler(message: types.Message, state: FSMContext):
+    await state.set_state(SupportStates.WAITING_FOR_QUERY)
+    await message.answer(
+        "🆘 <b>Support</b>\n\n"
+        "Please send your query — you can send text, or a photo with a caption.\n\n"
+        "Type /cancel to go back.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="/cancel")]],
+            resize_keyboard=True
+        )
+    )
+
+
+@dp.message(SupportStates.WAITING_FOR_QUERY, F.text)
+async def support_receive_text(message: types.Message, state: FSMContext):
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Cancelled.", reply_markup=get_main_menu_keyboard())
+        return
+
+    await state.update_data(query_text=message.text, query_photo=None)
+    await state.set_state(SupportStates.CONFIRMING_QUERY)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Yes, Send", callback_data="support_yes"),
+        InlineKeyboardButton(text="❌ No, Cancel", callback_data="support_no"),
+        width=2
+    )
+    await message.answer(
+        "📨 Should I send this query to the admin?",
+        reply_markup=builder.as_markup()
+    )
+
+
+@dp.message(SupportStates.WAITING_FOR_QUERY, F.photo)
+async def support_receive_photo(message: types.Message, state: FSMContext):
+    photo_file_id = message.photo[-1].file_id
+    caption = message.caption or ""
+    await state.update_data(query_text=caption, query_photo=photo_file_id)
+    await state.set_state(SupportStates.CONFIRMING_QUERY)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Yes, Send", callback_data="support_yes"),
+        InlineKeyboardButton(text="❌ No, Cancel", callback_data="support_no"),
+        width=2
+    )
+    await message.answer(
+        "📨 Should I send this query (with photo) to the admin?",
+        reply_markup=builder.as_markup()
+    )
+
+
+@dp.callback_query(SupportStates.CONFIRMING_QUERY, F.data == "support_no")
+async def support_no_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Query cancelled.")
+    await callback.message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(SupportStates.CONFIRMING_QUERY, F.data == "support_yes")
+async def support_yes_callback(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    query_text = data.get("query_text", "")
+    query_photo = data.get("query_photo")
+    user = callback.from_user
+    user_id = user.id
+    username = f"@{user.username}" if user.username else user.first_name
+
+    reply_cmd = f"/reply {user_id} "
+
+    # Build admin notification header
+    header = (
+        f"📩 <b>New Support Query</b>\n\n"
+        f"👤 <b>User:</b> {username}\n"
+        f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    if query_text:
+        header += f"💬 <b>Query:</b>\n{html_escape(query_text)}\n"
+    header += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    header += f"To reply, copy the command below and add your response:\n"
+
+    try:
+        if query_photo:
+            await bot.send_photo(
+                ADMIN_ID,
+                photo=query_photo,
+                caption=header + f"<code>{reply_cmd}</code>",
+                parse_mode="HTML"
+            )
+        else:
+            await bot.send_message(
+                ADMIN_ID,
+                header + f"<code>{reply_cmd}</code>",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        await callback.message.edit_text(
+            "⚠️ Could not send your query. Please try again later."
+        )
+        await state.clear()
+        await callback.answer()
+        return
+
+    await state.clear()
+    await callback.message.edit_text(
+        "✅ <b>Your query has been sent to the admin!</b>\n\n"
+        "You will receive a reply soon.",
+        parse_mode="HTML"
+    )
+    await callback.message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
+    await callback.answer()
+
+
+# Admin /reply command — for text replies
+@dp.message(Command("reply"))
+async def admin_reply_command(message: types.Message):
+    if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID, PAYMENT_ADMIN_ID]:
+        return
+
+    parts = message.text.split(None, 2)
+    if len(parts) < 3:
+        await message.answer(
+            "⚠️ Usage: <code>/reply USER_ID Your message here</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        target_user_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Invalid user ID.")
+        return
+
+    reply_text = parts[2]
+
+    try:
+        await bot.send_message(
+            target_user_id,
+            f"📨 <b>Reply from Support:</b>\n\n{html_escape(reply_text)}",
+            parse_mode="HTML"
+        )
+        await message.answer(f"✅ Reply sent to user <code>{target_user_id}</code>.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Failed to send reply: {e}")
+
+
+# Admin photo reply — photo with caption starting /reply USER_ID
+@dp.message(F.photo, F.caption.regexp(r"^/reply\s+\d+"))
+async def admin_photo_reply(message: types.Message):
+    if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID, PAYMENT_ADMIN_ID]:
+        return
+
+    parts = message.caption.split(None, 2)
+    if len(parts) < 2:
+        return
+
+    try:
+        target_user_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ Invalid user ID.")
+        return
+
+    reply_caption = parts[2] if len(parts) >= 3 else ""
+    photo_file_id = message.photo[-1].file_id
+
+    try:
+        await bot.send_photo(
+            target_user_id,
+            photo=photo_file_id,
+            caption=(
+                f"📨 <b>Reply from Support:</b>\n\n{html_escape(reply_caption)}"
+                if reply_caption else "📨 <b>Reply from Support</b>"
+            ),
+            parse_mode="HTML"
+        )
+        await message.answer(f"✅ Photo reply sent to user <code>{target_user_id}</code>.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Failed to send photo reply: {e}")
 
 
 @dp.message(Command("restart"))
