@@ -61,7 +61,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAHLu21pf_5aMlTdU6FazmxALuVmhx50szc")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAGREnA6iVpfgKrM54AA4j7d6x6q3o-P11A")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbot"
 ADMIN_ID = 6498333937  # Admin ID
@@ -1144,7 +1144,7 @@ def get_main_menu_keyboard():
             KeyboardButton(text="❤️‍🔥 Reactions By Followers")
         ],
         [
-            KeyboardButton(text="👤 My Account")
+            KeyboardButton(text="🗳️ Order Votes")
         ],
         [
             KeyboardButton(text="📝📊 Manual Views"),
@@ -1154,9 +1154,7 @@ def get_main_menu_keyboard():
             KeyboardButton(text="💳 Add Balance")
         ],
         [
-            KeyboardButton(text="🗳️ Order Votes")
-        ],
-        [
+            KeyboardButton(text="👤 My Account"),
             KeyboardButton(text="🆘 Support")
         ]
     ]
@@ -1362,6 +1360,9 @@ class VoteOrderStates(StatesGroup):
 class SupportStates(StatesGroup):
     WAITING_FOR_QUERY = State()
     CONFIRMING_QUERY = State()
+
+class AdminSupportStates(StatesGroup):
+    WAITING_FOR_REPLY = State()
 
 # ===== CONFIGURATION CLASS ===== #
 class ConfigData:
@@ -8880,7 +8881,7 @@ async def support_handler(message: types.Message, state: FSMContext):
     await state.set_state(SupportStates.WAITING_FOR_QUERY)
     await message.answer(
         "🆘 <b>Support</b>\n\n"
-        "Please send your query — you can send text, or a photo with a caption.\n\n"
+        "Please send your query — you can send <b>text</b>, or a <b>photo with caption</b>.\n\n"
         "Type /cancel to go back.",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
@@ -8946,104 +8947,113 @@ async def support_yes_callback(callback: types.CallbackQuery, state: FSMContext)
     query_photo = data.get("query_photo")
     user = callback.from_user
     user_id = user.id
-    username = f"@{user.username}" if user.username else user.first_name
+    username = user.full_name or user.first_name
 
-    reply_cmd = f"/reply {user_id} "
-
-    # Build admin notification header
-    header = (
-        f"📩 <b>New Support Query</b>\n\n"
-        f"👤 <b>User:</b> {username}\n"
-        f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
+    # Build admin notification in the style shown in the screenshot
+    admin_text = (
+        f"📩 <b>New Support Message</b>\n\n"
+        f"👤 <b>User:</b> {html_escape(username)}\n"
+        f"🆔 <b>User ID:</b> {user_id}\n\n"
+        f"📝 <b>Message:</b>\n"
+        f"<blockquote>{html_escape(query_text)}</blockquote>" if query_text else
+        f"📩 <b>New Support Message</b>\n\n"
+        f"👤 <b>User:</b> {html_escape(username)}\n"
+        f"🆔 <b>User ID:</b> {user_id}\n\n"
+        f"📝 <b>Message:</b> (photo attached)"
     )
-    if query_text:
-        header += f"💬 <b>Query:</b>\n{html_escape(query_text)}\n"
-    header += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-    header += f"To reply, copy the command below and add your response:\n"
+
+    reply_btn = InlineKeyboardBuilder()
+    reply_btn.row(
+        InlineKeyboardButton(text="↩️ Reply User", callback_data=f"support_reply:{user_id}")
+    )
 
     try:
         if query_photo:
             await bot.send_photo(
                 ADMIN_ID,
                 photo=query_photo,
-                caption=header + f"<code>{reply_cmd}</code>",
-                parse_mode="HTML"
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=reply_btn.as_markup()
             )
         else:
             await bot.send_message(
                 ADMIN_ID,
-                header + f"<code>{reply_cmd}</code>",
-                parse_mode="HTML"
+                admin_text,
+                parse_mode="HTML",
+                reply_markup=reply_btn.as_markup()
             )
-    except Exception as e:
-        await callback.message.edit_text(
-            "⚠️ Could not send your query. Please try again later."
-        )
+    except Exception:
+        await callback.message.edit_text("⚠️ Could not send your query. Please try again later.")
         await state.clear()
         await callback.answer()
         return
 
     await state.clear()
     await callback.message.edit_text(
-        "✅ <b>Your query has been sent to the admin!</b>\n\n"
-        "You will receive a reply soon.",
+        "✅ <b>Your query has been sent to the admin!</b>\n\nYou will receive a reply soon.",
         parse_mode="HTML"
     )
     await callback.message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
     await callback.answer()
 
 
-# Admin /reply command — for text replies
-@dp.message(Command("reply"))
-async def admin_reply_command(message: types.Message):
-    if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID, PAYMENT_ADMIN_ID]:
-        return
+# Admin clicks "↩️ Reply User" button
+@dp.callback_query(F.data.startswith("support_reply:"))
+async def support_reply_button(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID, PAYMENT_ADMIN_ID]:
+        return await callback.answer("Not authorized.", show_alert=True)
 
-    parts = message.text.split(None, 2)
-    if len(parts) < 3:
-        await message.answer(
-            "⚠️ Usage: <code>/reply USER_ID Your message here</code>",
-            parse_mode="HTML"
+    target_user_id = int(callback.data.split(":")[1])
+    await state.update_data(support_target_user_id=target_user_id)
+    await state.set_state(AdminSupportStates.WAITING_FOR_REPLY)
+
+    await callback.message.answer(
+        f"✏️ <b>Reply to User <code>{target_user_id}</code></b>\n\n"
+        "Send your reply now — <b>text</b> or a <b>photo with caption</b> both work.\n\n"
+        "Type /cancel to abort.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="/cancel")]],
+            resize_keyboard=True
         )
+    )
+    await callback.answer()
+
+
+# Admin sends text reply
+@dp.message(AdminSupportStates.WAITING_FOR_REPLY, F.text)
+async def admin_support_reply_text(message: types.Message, state: FSMContext):
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Reply cancelled.")
         return
 
-    try:
-        target_user_id = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Invalid user ID.")
-        return
-
-    reply_text = parts[2]
+    data = await state.get_data()
+    target_user_id = data.get("support_target_user_id")
 
     try:
         await bot.send_message(
             target_user_id,
-            f"📨 <b>Reply from Support:</b>\n\n{html_escape(reply_text)}",
+            f"📨 <b>Reply from Support:</b>\n\n{html_escape(message.text)}",
             parse_mode="HTML"
         )
-        await message.answer(f"✅ Reply sent to user <code>{target_user_id}</code>.", parse_mode="HTML")
+        await message.answer(
+            f"✅ Reply sent to user <code>{target_user_id}</code>.",
+            parse_mode="HTML"
+        )
     except Exception as e:
         await message.answer(f"❌ Failed to send reply: {e}")
 
+    await state.clear()
 
-# Admin photo reply — photo with caption starting /reply USER_ID
-@dp.message(F.photo, F.caption.regexp(r"^/reply\s+\d+"))
-async def admin_photo_reply(message: types.Message):
-    if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID, PAYMENT_ADMIN_ID]:
-        return
 
-    parts = message.caption.split(None, 2)
-    if len(parts) < 2:
-        return
-
-    try:
-        target_user_id = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Invalid user ID.")
-        return
-
-    reply_caption = parts[2] if len(parts) >= 3 else ""
+# Admin sends photo reply
+@dp.message(AdminSupportStates.WAITING_FOR_REPLY, F.photo)
+async def admin_support_reply_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    target_user_id = data.get("support_target_user_id")
+    caption = message.caption or ""
     photo_file_id = message.photo[-1].file_id
 
     try:
@@ -9051,14 +9061,19 @@ async def admin_photo_reply(message: types.Message):
             target_user_id,
             photo=photo_file_id,
             caption=(
-                f"📨 <b>Reply from Support:</b>\n\n{html_escape(reply_caption)}"
-                if reply_caption else "📨 <b>Reply from Support</b>"
+                f"📨 <b>Reply from Support:</b>\n\n{html_escape(caption)}"
+                if caption else "📨 <b>Reply from Support</b>"
             ),
             parse_mode="HTML"
         )
-        await message.answer(f"✅ Photo reply sent to user <code>{target_user_id}</code>.", parse_mode="HTML")
+        await message.answer(
+            f"✅ Photo reply sent to user <code>{target_user_id}</code>.",
+            parse_mode="HTML"
+        )
     except Exception as e:
         await message.answer(f"❌ Failed to send photo reply: {e}")
+
+    await state.clear()
 
 
 @dp.message(Command("restart"))
