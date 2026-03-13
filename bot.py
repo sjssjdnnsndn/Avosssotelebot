@@ -8898,7 +8898,7 @@ async def support_receive_text(message: types.Message, state: FSMContext):
         await message.answer("Cancelled.", reply_markup=get_main_menu_keyboard())
         return
 
-    await state.update_data(query_text=message.text, query_photo=None)
+    await state.update_data(query_text=message.text, query_photo=None, query_voice=None)
     await state.set_state(SupportStates.CONFIRMING_QUERY)
 
     builder = InlineKeyboardBuilder()
@@ -8917,7 +8917,7 @@ async def support_receive_text(message: types.Message, state: FSMContext):
 async def support_receive_photo(message: types.Message, state: FSMContext):
     photo_file_id = message.photo[-1].file_id
     caption = message.caption or ""
-    await state.update_data(query_text=caption, query_photo=photo_file_id)
+    await state.update_data(query_text=caption, query_photo=photo_file_id, query_voice=None)
     await state.set_state(SupportStates.CONFIRMING_QUERY)
 
     builder = InlineKeyboardBuilder()
@@ -8928,6 +8928,24 @@ async def support_receive_photo(message: types.Message, state: FSMContext):
     )
     await message.answer(
         "📨 Should I send this query (with photo) to the admin?",
+        reply_markup=builder.as_markup()
+    )
+
+
+@dp.message(SupportStates.WAITING_FOR_QUERY, F.voice)
+async def support_receive_voice(message: types.Message, state: FSMContext):
+    voice_file_id = message.voice.file_id
+    await state.update_data(query_text="(voice message)", query_photo=None, query_voice=voice_file_id)
+    await state.set_state(SupportStates.CONFIRMING_QUERY)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Yes, Send", callback_data="support_yes"),
+        InlineKeyboardButton(text="❌ No, Cancel", callback_data="support_no"),
+        width=2
+    )
+    await message.answer(
+        "📨 Should I send this voice query to the admin?",
         reply_markup=builder.as_markup()
     )
 
@@ -8945,27 +8963,41 @@ async def support_yes_callback(callback: types.CallbackQuery, state: FSMContext)
     data = await state.get_data()
     query_text = data.get("query_text", "")
     query_photo = data.get("query_photo")
+    query_voice = data.get("query_voice")
     user = callback.from_user
     user_id = user.id
     username = user.full_name or user.first_name
-
-    # Build admin notification in the style shown in the screenshot
-    admin_text = (
-        f"📩 <b>New Support Message</b>\n\n"
-        f"👤 <b>User:</b> {html_escape(username)}\n"
-        f"🆔 <b>User ID:</b> {user_id}\n\n"
-        f"📝 <b>Message:</b>\n"
-        f"<blockquote>{html_escape(query_text)}</blockquote>" if query_text else
-        f"📩 <b>New Support Message</b>\n\n"
-        f"👤 <b>User:</b> {html_escape(username)}\n"
-        f"🆔 <b>User ID:</b> {user_id}\n\n"
-        f"📝 <b>Message:</b> (photo attached)"
-    )
 
     reply_btn = InlineKeyboardBuilder()
     reply_btn.row(
         InlineKeyboardButton(text="↩️ Reply User", callback_data=f"support_reply:{user_id}")
     )
+
+    # Build header text
+    if query_photo:
+        msg_label = "(photo attached)" if not query_text else query_text
+        admin_text = (
+            f"📩 <b>New Support Message</b>\n\n"
+            f"👤 <b>User:</b> {html_escape(username)}\n"
+            f"🆔 <b>User ID:</b> {user_id}\n\n"
+            f"📝 <b>Message:</b>\n"
+            f"<blockquote expandable>{html_escape(msg_label)}</blockquote>"
+        )
+    elif query_voice:
+        admin_text = (
+            f"📩 <b>New Support Message</b>\n\n"
+            f"👤 <b>User:</b> {html_escape(username)}\n"
+            f"🆔 <b>User ID:</b> {user_id}\n\n"
+            f"🎤 <b>Message:</b> (voice message below)"
+        )
+    else:
+        admin_text = (
+            f"📩 <b>New Support Message</b>\n\n"
+            f"👤 <b>User:</b> {html_escape(username)}\n"
+            f"🆔 <b>User ID:</b> {user_id}\n\n"
+            f"📝 <b>Message:</b>\n"
+            f"<blockquote expandable>{html_escape(query_text)}</blockquote>"
+        )
 
     try:
         if query_photo:
@@ -8974,6 +9006,18 @@ async def support_yes_callback(callback: types.CallbackQuery, state: FSMContext)
                 photo=query_photo,
                 caption=admin_text,
                 parse_mode="HTML",
+                reply_markup=reply_btn.as_markup()
+            )
+        elif query_voice:
+            # Send text header first, then the voice
+            await bot.send_message(
+                ADMIN_ID,
+                admin_text,
+                parse_mode="HTML"
+            )
+            await bot.send_voice(
+                ADMIN_ID,
+                voice=query_voice,
                 reply_markup=reply_btn.as_markup()
             )
         else:
