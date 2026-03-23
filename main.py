@@ -68,9 +68,9 @@ from session_manager import SessionManager
 API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8628340344:AAFrIpDyLfccHlcVx0u652RygHazVEdyvig")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbohst"
-ADMIN_ID = 6498333937  # Admin ID
+ADMIN_ID = 7775376239  # Admin ID
 PAYMENT_ADMIN_ID = 8094204927  # Admin to receive payment notifications
-MAJOR_ADMIN_ID = 6498333937  # Major admin who can make/remove other admins and manage powers
+MAJOR_ADMIN_ID = 7775376239  # Major admin who can make/remove other admins and manage powers
 
 # Telegram API credentials
 API_ID = 23026955
@@ -1602,8 +1602,8 @@ def contact_button():
     keyboard = [
         [
             InlineKeyboardButton(
-                text="☎️ Contact Admin",
-                url=f"tg://user?id=6617707066"
+                text="🆘 Contact Support",
+                callback_data="open_support"
             ),
         ],
     ]
@@ -2119,8 +2119,9 @@ async def account_handler(message: types.Message):
                 total = order.get('quantity', 0)
                 service = "Votes"
 
+            pct = f"{int(delivered/total*100)}%" if total > 0 else "N/A"
             response += (
-                f"{i}. {service} - {delivered}/{total} ({int(delivered/total*100)}%)\n"
+                f"{i}. {service} - {delivered}/{total} ({pct})\n"
                 f"   Status: {order['status']}\n"
             )
     else:
@@ -2130,6 +2131,22 @@ async def account_handler(message: types.Message):
         response,
         parse_mode='markdown',
         reply_markup=contact_button()
+    )
+
+
+@dp.callback_query(lambda c: c.data == "open_support")
+async def open_support_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(SupportStates.WAITING_FOR_QUERY)
+    await callback.message.answer(
+        "🆘 <b>Support</b>\n\n"
+        "Please send your query — you can send <b>text</b>, or a <b>photo with caption</b>.\n\n"
+        "Type /cancel to go back.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="/cancel")]],
+            resize_keyboard=True
+        )
     )
 
 # ===== HANDLERS ===== #
