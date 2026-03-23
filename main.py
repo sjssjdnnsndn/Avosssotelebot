@@ -2150,7 +2150,11 @@ async def cmd_start(message: types.Message):
 @dp.message(F.text == "🛒 Buy Telegram Accounts")
 async def buy_accounts_entry(message: types.Message, state: FSMContext):
     await state.clear()
-    await accounts_shop.acct_show_main_menu(message)
+    try:
+        await accounts_shop.acct_show_main_menu(message)
+    except Exception as e:
+        logger.error(f"[AcctShop] acct_show_main_menu error: {e}", exc_info=True)
+        await message.answer("⚠️ Failed to open the shop. Please try again.", reply_markup=get_main_menu_keyboard())
 
 
 @dp.message(F.text == "⬅️ Back to Main Menu")
@@ -2208,6 +2212,11 @@ async def accounts_shop_callback(callback: types.CallbackQuery):
 
 
 # ===== ACCOUNTS SHOP - BUTTON HANDLERS ===== #
+@dp.message(F.text == "💳 Buy Telegram Accounts")
+async def acct_buy_accounts_btn(message: types.Message):
+    await accounts_shop.acct_show_accounts(message)
+
+
 @dp.message(F.text == "📊 Acct Stats")
 async def acct_stats_btn(message: types.Message):
     await accounts_shop.acct_show_stats(message)

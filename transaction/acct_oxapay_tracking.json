@@ -1,0 +1,13 @@
+{
+  "pending": {
+    "acct_oxapay_6498333937_1774239944": {
+      "user_id": 6498333937,
+      "amount": 2.0,
+      "trackId": "142091881",
+      "payLink": "https://pay.oxapay.com/15208980/142091881",
+      "created": "2026-03-23T04:25:44.466645",
+      "status": "pending"
+    }
+  },
+  "completed": {}
+}
