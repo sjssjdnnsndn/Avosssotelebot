@@ -65,7 +65,7 @@ from apscheduler.triggers.cron import CronTrigger
 from session_manager import SessionManager
 
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAFR14_ONq2_v44zpp3qH2sTs-8SpGMDTbE")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8628340344:AAFrIpDyLfccHlcVx0u652RygHazVEdyvig")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
 DB_NAME = "newviewsbohst"
 ADMIN_ID = 6498333937  # Admin ID
