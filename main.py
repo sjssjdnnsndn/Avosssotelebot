@@ -60,10 +60,13 @@ from pyngrok import ngrok
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+# ===== ROBUST SESSION MANAGER =====
+from session_manager import SessionManager
+
 # ===== CONFIGURATION ===== #
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAGREnA6iVpfgKrM54AA4j7d6x6q3o-P11A")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8387013883:AAFR14_ONq2_v44zpp3qH2sTs-8SpGMDTbE")
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://sanjana928828_db_user:JejejjeejejeieiEuueueye_ywyYwywywy736633366262_yehevefhwuwjbevegEuvegehheheben@cluster0.gcwanr2.mongodb.net/?appName=Cluster0")
-DB_NAME = "newviewsbot"
+DB_NAME = "newviewsbohst"
 ADMIN_ID = 6498333937  # Admin ID
 PAYMENT_ADMIN_ID = 8094204927  # Admin to receive payment notifications
 MAJOR_ADMIN_ID = 6498333937  # Major admin who can make/remove other admins and manage powers
@@ -91,12 +94,37 @@ payments_collection = db.payments
 channels_collection = db.channels
 pricing_collection = db.pricing
 sessions_collection = db.sessions
+settings_collection = db.settings
+api_credentials_collection = db.api_credentials
 
 # Global variables
-active_clients = []
+active_clients = []       # legacy alias — populated via session_mgr.active_clients
+session_mgr: "SessionManager" = None   # Robust session manager
 user_oxapay_orders = {}
 public_url = None
 scheduler = None  # APScheduler for night/day mode notifications
+
+def get_active_clients():
+    """Always use this helper to get live clients."""
+    if session_mgr is not None:
+        return session_mgr.active_clients
+    return active_clients
+
+# Reaction pools — used to randomise per-account so deliveries look natural.
+# Only emojis Telegram actually accepts as reactions are listed here.
+POSITIVE_REACTIONS = [
+    "\u2764\ufe0f", "\U0001f525", "\U0001f44d", "\U0001f44f", "\U0001f389",
+    "\U0001f929", "\U0001f60d", "\U0001f970", "\U0001f4af", "\u26a1",
+    "\U0001f3c6", "\U0001f4aa", "\U0001f64c", "\U0001f601", "\U0001f31a",
+    "\U0001f60e", "\U0001f917", "\U0001f64f", "\U0001f91d", "\U0001f54a",
+    "\U0001f433", "\U0001f984"
+]
+NEGATIVE_REACTIONS = [
+    "\U0001f44e", "\U0001f92c", "\U0001f92e", "\U0001f4a9", "\U0001f921",
+    "\U0001f971", "\U0001f494", "\U0001f928", "\U0001f610", "\U0001f621",
+    "\U0001f92a", "\U0001f608", "\U0001f32d", "\U0001f34c", "\U0001f595",
+    "\U0001f485", "\U0001f47e", "\U0001f937"
+]
 
 # Initialize Flask server for OxaPay webhook
 flask_app = Flask(__name__)
@@ -152,7 +180,7 @@ def verify_payment():
             # Get user details
             user_id = chat_id
             username = "N/A"
-            
+
             # Try to get username from bot API
             try:
                 telegram_url = f"https://api.telegram.org/bot{API_TOKEN}/getChat"
@@ -174,7 +202,7 @@ def verify_payment():
                     f"💰 Amount: ${info.get('amount')}\n\n"
                     "🎉 Thank you for your payment!"
                 )
-                
+
                 # Admin notification for successful payment
                 admin_message = (
                     "✅ *Payment Received*\n\n"
@@ -187,7 +215,7 @@ def verify_payment():
                     f"📦 *Payment Data:*\n"
                     f"```json\n{json.dumps(data, indent=2)[:500]}...\n```"
                 )
-                
+
                 # Update user balance
                 asyncio.create_task(update_user_balance(chat_id, float(info.get('amount'))))
             else:
@@ -197,7 +225,7 @@ def verify_payment():
                     f"Status: *{status.upper()}*\n\n"
                     "Please check your payment details."
                 )
-                
+
                 # Admin notification for unsuccessful payment
                 admin_message = (
                     "⚠️ *Payment Failed/Pending*\n\n"
@@ -213,7 +241,7 @@ def verify_payment():
 
             try:
                 telegram_url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
-                
+
                 # Send notification to user
                 response = requests.post(
                     telegram_url,
@@ -237,7 +265,7 @@ def verify_payment():
                         + str(result.get("description"))
                         + " ***"
                     )
-                
+
                 # Send notification to admin
                 admin_response = requests.post(
                     telegram_url,
@@ -283,7 +311,7 @@ def calculate_delay_for_speed(speed_multiplier, base_delay=1.0):
     - Fast (3-4 hrs): ~12-13 seconds per action  
     - Normal (5-6 hrs): ~19-20 seconds per action
     - Slow (7-8 hrs): ~25-27 seconds per action
-    
+
     Args:
         speed_multiplier: 0.5 (Slow), 1.0 (Normal), 1.5 (Fast), 2.0 (Ultra Fast)
         base_delay: Base delay in seconds (default 1.0)
@@ -320,27 +348,27 @@ def estimate_delivery_duration(total_quantity, speed_multiplier, clients_count=1
         base_delay = 12.5
     elif speed_multiplier == 2.0:  # Ultra Fast
         base_delay = 9.5
-    
+
     # Calculate total time in seconds
     total_time_seconds = (total_quantity / max(clients_count, 1)) * base_delay
-    
+
     # Convert to hours and minutes
     hours = int(total_time_seconds // 3600)
     minutes = int((total_time_seconds % 3600) // 60)
-    
+
     return hours, minutes
 
 def get_delay_text(total_quantity, speed_multiplier, clients_count=1):
     """Get formatted delay and delivery estimation text"""
     hours, minutes = estimate_delivery_duration(total_quantity, speed_multiplier, clients_count)
-    
+
     base_delay = "25-27s" if speed_multiplier == 0.5 else ("19-20s" if speed_multiplier == 1.0 else ("12-13s" if speed_multiplier == 1.5 else "9-10s"))
-    
+
     time_str = ""
     if hours > 0:
         time_str += f"{hours}h "
     time_str += f"{minutes}m"
-    
+
     return f"Delay: {base_delay} (Delivers {total_quantity} Views in {time_str})"
 
 def get_speed_name(speed_multiplier):
@@ -404,7 +432,7 @@ def setup_night_mode_scheduler():
     """Setup APScheduler for night/day mode notifications"""
     global scheduler
     scheduler = AsyncIOScheduler()
-    
+
     # Schedule night mode notification at 11 PM IST (17:30 UTC = 11 PM IST)
     scheduler.add_job(
         send_night_mode_notification,
@@ -412,7 +440,7 @@ def setup_night_mode_scheduler():
         id='night_mode_notification',
         replace_existing=True
     )
-    
+
     # Schedule day mode notification at 7 AM IST (1:30 UTC = 7 AM IST)
     scheduler.add_job(
         send_day_mode_notification,
@@ -420,7 +448,7 @@ def setup_night_mode_scheduler():
         id='day_mode_notification',
         replace_existing=True
     )
-    
+
     scheduler.start()
     print("✅ Night mode scheduler started - Notifications at 11 PM and 7 AM IST")
 
@@ -439,19 +467,19 @@ def calculate_delivery_time(quantity, delay_seconds, clients_count=1):
     # Calculate total time in seconds
     # Each client can deliver independently, so divide by client count
     total_seconds = (quantity / max(clients_count, 1)) * delay_seconds
-    
+
     # Convert to hours, minutes, seconds
     hours = int(total_seconds // 3600)
     minutes = int((total_seconds % 3600) // 60)
     seconds = int(total_seconds % 60)
-    
+
     # Format the output
     return f"{hours}h {minutes}m {seconds}s"
 
 
 def get_available_account_count() -> int:
     """Return currently available Telegram account count."""
-    return max(0, len(active_clients))
+    return max(0, len(get_active_clients()))
 
 
 def get_per_post_limit() -> int:
@@ -509,7 +537,7 @@ async def calculate_order_price(views_per_post, posts_per_day, days):
     pricing = await pricing_collection.find_one({"service_type": "views_by_followers"})
     if not pricing:
         return 0.0
-    
+
     price_per_view = pricing.get("price_per_view", 0.0001)
     total_views = views_per_post * posts_per_day * days
     total_price = total_views * price_per_view
@@ -547,6 +575,9 @@ class TelegramAccountStates(StatesGroup):
     LOGIN_STRING_SESSION_API_HASH = State()
     # NEW: Bulk ZIP Import State
     BULK_IMPORT_ZIP = State()
+    # API Credentials Management
+    ADD_API_ID = State()
+    ADD_API_HASH = State()
 
 async def create_telegram_client(session_string=None, api_id=None, api_hash=None):
     """Create Telegram client with optional custom API credentials"""
@@ -563,24 +594,216 @@ async def create_telegram_client_from_file(session_file, api_id=None, api_hash=N
     use_api_id = int(api_id) if api_id else int(API_ID)
     use_api_hash = api_hash if api_hash else API_HASH
     return TelegramClient(
-        session_file,  # Direct file path
-        use_api_id,
-        use_api_hash
+    session_file,
+    use_api_id,
+    use_api_hash,
+    connection_retries=5,
+    retry_delay=3
+)
+
+def normalize_session_phone(phone=None, session_name=None, user_id=None):
+    """Return a stable unique identifier when phone is missing."""
+    cleaned_phone = (phone or "").strip()
+    if cleaned_phone:
+        return cleaned_phone
+
+    session_name = (session_name or "").replace(".session", "").strip()
+    if session_name:
+        return f"session:{session_name}"
+
+    if user_id:
+        return f"uid:{user_id}"
+
+    return f"session:{int(datetime.utcnow().timestamp())}"
+
+
+def build_session_label(phone=None, username=None, session_name=None, user_id=None):
+    if phone:
+        return str(phone)
+
+    uname = (username or "").strip()
+    if uname:
+        return f"@{uname}"
+
+    sname = (session_name or "").replace(".session", "").strip()
+    if sname:
+        return f"session-{sname}"
+
+    if user_id:
+        return f"session-{user_id}"
+
+    return "session-unknown"
+
+
+def get_session_status_meta(session):
+    status = (session.get('status') or '').lower().strip()
+
+    if status == 'active':
+        return "✅", "Active"
+    if status in {'unauthorized', 'expired'}:
+        return "⚠️", "Expired - Needs Re-login"
+    if status == 'connection_error':
+        return "🔌", "Connection Error"
+    if status in {'error', 'load_error'}:
+        return "❌", "Error"
+
+    # Robust fallback: do not show Unknown when no explicit error is stored.
+    if session.get('last_error'):
+        return "⚠️", "Needs Recheck"
+    return "✅", "Active"
+
+
+def get_session_username_text(session):
+    username = (session.get('username') or '').strip()
+    return f"@{username}" if username else "No username"
+
+
+def get_session_display_label(session):
+    return (
+        session.get('session_label')
+        or session.get('phone')
+        or build_session_label(
+            phone=session.get('phone'),
+            username=session.get('username'),
+            session_name=session.get('session_name'),
+            user_id=session.get('user_id')
+        )
     )
 
-async def store_session(phone, session_string, user_data, api_id=None, api_hash=None):
+
+def annotate_client(client, phone=None, user_data=None, session_name=None):
+    user_id = user_data.id if user_data else None
+    username = user_data.username if user_data else None
+
+    client._session_phone = normalize_session_phone(phone, session_name=session_name, user_id=user_id)
+    client._session_user_id = user_id
+    client._session_username = username or ""
+    client._session_label = build_session_label(
+        phone=client._session_phone,
+        username=username,
+        session_name=session_name,
+        user_id=user_id
+    )
+    client._session_name = (session_name or "").replace(".session", "")
+
+
+async def disconnect_active_client_by_identity(phone=None, user_id=None):
+    """Remove already-loaded duplicate account and keep only the latest usable one."""
+    survivors = []
+    pool = get_active_clients()
+
+    for existing in list(pool):
+        existing_phone = getattr(existing, "_session_phone", None)
+        existing_user_id = getattr(existing, "_session_user_id", None)
+
+        is_same_phone = bool(phone and existing_phone == phone)
+        is_same_user = bool(user_id and existing_user_id == user_id)
+
+        if is_same_phone or is_same_user:
+            try:
+                if existing.is_connected():
+                    await existing.disconnect()
+            except Exception:
+                pass
+        else:
+            survivors.append(existing)
+
+    # Mutate in-place so all references to this list stay consistent
+    pool.clear()
+    pool.extend(survivors)
+
+
+async def register_client_as_active(client, user_data=None, phone=None, session_name=None):
+    if user_data is None:
+        try:
+            user_data = await client.get_me()
+        except Exception:
+            user_data = None
+
+    normalized_phone = normalize_session_phone(
+        phone or (user_data.phone if user_data else None),
+        session_name=session_name,
+        user_id=(user_data.id if user_data else None)
+    )
+    user_id = user_data.id if user_data else None
+
+    await disconnect_active_client_by_identity(phone=normalized_phone, user_id=user_id)
+    annotate_client(client, phone=normalized_phone, user_data=user_data, session_name=session_name)
+    # Always append to the live pool returned by get_active_clients()
+    # (session_mgr.active_clients when session_mgr is set, else global active_clients)
+    get_active_clients().append(client)
+    return normalized_phone
+
+
+def should_cleanup_and_retry(error_message: str) -> bool:
+    msg = (error_message or "").lower()
+    retry_keywords = [
+        "same ip",
+        "already",
+        "duplicate",
+        "auth key",
+        "phone number occupied",
+        "authorization key",
+        "key duplicated"
+    ]
+    return any(k in msg for k in retry_keywords)
+
+
+def remove_session_file_by_name(session_name):
+    clean_name = (session_name or "").replace('.session', '').strip()
+    if not clean_name:
+        return
+
+    try:
+        sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+        file_path = os.path.join(sessions_dir, f"{clean_name}.session")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        print(f"⚠️ Could not remove session file {session_name}: {e}")
+
+
+async def store_session(phone, session_string, user_data, api_id=None, api_hash=None, session_name=None, status="active"):
+    now = datetime.utcnow()
+    normalized_phone = normalize_session_phone(
+        phone,
+        session_name=session_name,
+        user_id=(user_data.id if user_data else None)
+    )
+
     session_data = {
-        "phone": phone,
+        "phone": normalized_phone,
         "session_string": session_string,
         "user_id": user_data.id if user_data else None,
         "first_name": user_data.first_name if user_data else "",
         "last_name": user_data.last_name if user_data else "",
         "username": user_data.username if user_data else "",
+        "session_name": (session_name or "").replace(".session", ""),
+        "session_label": build_session_label(
+            phone=normalized_phone,
+            username=(user_data.username if user_data else None),
+            session_name=session_name,
+            user_id=(user_data.id if user_data else None)
+        ),
+        "status": status,
+        "last_error": None,
+        "last_check": now,
+        "last_successful_load": now,
+        "updated_at": now,
         "api_id": api_id,
         "api_hash": api_hash,
-        "created_at": datetime.utcnow()
     }
-    await sessions_collection.insert_one(session_data)
+
+    await sessions_collection.update_one(
+        {"phone": normalized_phone},
+        {
+            "$set": session_data,
+            "$setOnInsert": {"created_at": now}
+        },
+        upsert=True
+    )
+
+    return normalized_phone
 
 async def get_all_sessions():
     return await sessions_collection.find({}).to_list(None)
@@ -589,111 +812,288 @@ async def remove_session(phone):
     await sessions_collection.delete_one({"phone": phone})
 
 
+# ===== API CREDENTIALS MANAGEMENT ===== #
+
+async def get_all_api_credentials():
+    """Return all stored API ID/HASH pairs sorted by insertion order."""
+    return await api_credentials_collection.find({}).sort("created_at", 1).to_list(None)
+
+
+async def add_api_credential(api_id: int, api_hash: str) -> str:
+    """Add a new API ID/HASH pair. Returns the inserted document ID."""
+    now = datetime.utcnow()
+    doc = {
+        "api_id": int(api_id),
+        "api_hash": str(api_hash).strip(),
+        "session_count": 0,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = await api_credentials_collection.insert_one(doc)
+    return str(result.inserted_id)
+
+
+async def delete_api_credential(cred_id: str):
+    """Delete an API credential by its ObjectId string."""
+    await api_credentials_collection.delete_one({"_id": ObjectId(cred_id)})
+
+
+async def rebalance_sessions_across_apis():
+    """
+    Redistribute all sessions evenly among all stored API credentials.
+    Updates each session's api_id and api_hash in the database.
+    Also reloads the in-memory active_clients with the correct API pairs.
+    Returns (total_sessions, total_apis, distribution_text)
+    """
+    all_apis = await get_all_api_credentials()
+    if not all_apis:
+        return 0, 0, "No API credentials stored."
+
+    all_sessions = await get_all_sessions()
+    total_sessions = len(all_sessions)
+    total_apis = len(all_apis)
+
+    if total_sessions == 0:
+        return 0, total_apis, "No sessions to distribute."
+
+    # Calculate distribution: ceil(total_sessions / total_apis) per API
+    base = total_sessions // total_apis
+    remainder = total_sessions % total_apis
+
+    distribution_lines = []
+    session_idx = 0
+
+    for api_idx, api_cred in enumerate(all_apis):
+        # First `remainder` APIs get one extra session
+        count = base + (1 if api_idx < remainder else 0)
+        assigned_sessions = all_sessions[session_idx: session_idx + count]
+        session_idx += count
+
+        api_id = api_cred["api_id"]
+        api_hash = api_cred["api_hash"]
+        api_label = f"API {api_idx + 1} (ID: {api_id})"
+        distribution_lines.append(f"{api_label} → {count} sessions")
+
+        # Update each assigned session in DB
+        for sess in assigned_sessions:
+            await sessions_collection.update_one(
+                {"_id": sess["_id"]},
+                {"$set": {"api_id": api_id, "api_hash": api_hash, "updated_at": datetime.utcnow()}}
+            )
+
+        # Update session_count on the API credential
+        await api_credentials_collection.update_one(
+            {"_id": api_cred["_id"]},
+            {"$set": {"session_count": count, "updated_at": datetime.utcnow()}}
+        )
+
+    return total_sessions, total_apis, "\n".join(distribution_lines)
+
+
+def get_api_for_session_index(session_index: int, all_apis: list, total_sessions: int) -> dict:
+    """
+    Given a 0-based session_index, return the correct api credential dict
+    from all_apis using even distribution logic.
+    """
+    total_apis = len(all_apis)
+    if total_apis == 0:
+        return {"api_id": API_ID, "api_hash": API_HASH}
+
+    base = total_sessions // total_apis
+    remainder = total_sessions % total_apis
+
+    # Find which API bucket this session falls into
+    cumulative = 0
+    for api_idx, api_cred in enumerate(all_apis):
+        count = base + (1 if api_idx < remainder else 0)
+        cumulative += count
+        if session_index < cumulative:
+            return api_cred
+
+    # Fallback
+    return all_apis[-1]
+
+
 async def load_all_clients_from_files():
     """Load clients from .session files - MORE STABLE approach"""
-    global active_clients
-    active_clients = []
-    
+    get_active_clients().clear()
+
     print("\n" + "="*50)
     print("🔄 Loading Telegram Accounts from Session Files...")
     print("="*50)
-    
+
     import glob
     # Create sessions directory if it doesn't exist
     sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
     os.makedirs(sessions_dir, exist_ok=True)
-    
-    session_files = glob.glob(f"{sessions_dir}/*.session")
-    
+
+    session_files = sorted(glob.glob(f"{sessions_dir}/*.session"))
+
     if not session_files:
         print(f"⚠️ No .session files found in {sessions_dir}")
         print(f"💡 Place your .session files in {sessions_dir} directory")
         print("="*50 + "\n")
         return
-    
+
     print(f"📊 Found {len(session_files)} session file(s)\n")
-    
+
     loaded_count = 0
     failed_count = 0
-    
+
     for idx, session_file in enumerate(session_files, 1):
         session_name = os.path.basename(session_file).replace('.session', '')
         print(f"[{idx}/{len(session_files)}] Processing: {session_name}")
-        
-        try:
-            # Create client from file
-            client = await create_telegram_client_from_file(
-                session_file.replace('.session', ''),  # Telethon adds .session automatically
-                api_id=API_ID,
-                api_hash=API_HASH
-            )
-            
-            # Connect
+
+        client = None
+        handled = False
+
+        for attempt in range(2):
             try:
-                await client.connect()
+                # Create client from file
+                client = await create_telegram_client_from_file(
+                    session_file,
+                    api_id=API_ID,
+                    api_hash=API_HASH
+                )
+
+
+                await asyncio.wait_for(client.connect(), timeout=15)
+
                 print(f"  🔗 Connected successfully")
-            except Exception as conn_err:
-                print(f"  ❌ Connection failed: {conn_err}")
-                failed_count += 1
-                continue
-            
-            # Verify authorization
-            try:
+
+                # Verify authorization (only explicit false means expired)
                 if not await client.is_user_authorized():
-                    print(f"  ❌ Session not authorized (expired/invalid)")
+                    print("  ⚠️ Session unauthorized (explicit check failed)")
+                    placeholder_phone = normalize_session_phone(None, session_name=session_name)
+                    await sessions_collection.update_one(
+                        {"phone": placeholder_phone},
+                        {
+                            "$set": {
+                                "session_name": session_name,
+                                "session_label": build_session_label(session_name=session_name),
+                                "status": "unauthorized",
+                                "last_error": "Session unauthorized (explicit check)",
+                                "last_check": datetime.utcnow(),
+                                "updated_at": datetime.utcnow()
+                            },
+                            "$setOnInsert": {"created_at": datetime.utcnow()}
+                        },
+                        upsert=True
+                    )
                     await client.disconnect()
                     failed_count += 1
-                    continue
-            except Exception as auth_err:
-                print(f"  ❌ Auth check failed: {auth_err}")
-                await client.disconnect()
-                failed_count += 1
-                continue
-            
-            # Get user info
-            try:
+                    handled = True
+                    break
+
                 me = await client.get_me()
-                name = me.first_name or "Unknown"
+                normalized_phone = normalize_session_phone(me.phone, session_name=session_name, user_id=me.id)
+
+                # Persist healthy session as active regardless of username availability
+                await store_session(
+                    phone=normalized_phone,
+                    session_string=client.session.save(),
+                    user_data=me,
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    session_name=session_name,
+                    status="active"
+                )
+
+                # Replace any previously loaded duplicate account and keep this live client
+                await register_client_as_active(
+                    client,
+                    user_data=me,
+                    phone=normalized_phone,
+                    session_name=session_name
+                )
+
+                name = me.first_name or "No name"
                 username = f"@{me.username}" if me.username else "No username"
-                phone = me.phone or "No phone"
-                print(f"  ✅ Loaded: {name} {username} ({phone})")
-                
-                # Add to active clients
-                active_clients.append(client)
+                print(f"  ✅ Loaded: {name} {username} ({normalized_phone})")
+
                 loaded_count += 1
+                handled = True
+                break
+
             except Exception as e:
-                print(f"  ⚠️ Error getting user info: {e}")
-                # Still add if connection is valid
-                active_clients.append(client)
-                loaded_count += 1
-        
-        except Exception as e:
-            print(f"  ❌ Failed to load: {e}")
+                err_text = str(e)
+                is_last_attempt = attempt == 1
+
+                if client:
+                    try:
+                        if client.is_connected():
+                            await client.disconnect()
+                    except Exception:
+                        pass
+
+                if not is_last_attempt and should_cleanup_and_retry(err_text):
+                    print(f"  ♻️ Duplicate/IP issue detected. Clearing stale auth_key and retrying...")
+                    # Clear the cached auth_key from the SQLite session file so Telethon
+                    # negotiates a fresh one on the next connect attempt.
+                    try:
+                        import sqlite3 as _sqlite3
+                        sq_path = session_file  # already ends with .session
+                        sq_conn = _sqlite3.connect(sq_path)
+                        sq_conn.execute("UPDATE sessions SET auth_key = NULL")
+                        sq_conn.commit()
+                        sq_conn.close()
+                        print(f"  🧹 Cleared auth_key from {os.path.basename(sq_path)}")
+                    except Exception as sq_err:
+                        print(f"  ⚠️ Could not clear auth_key: {sq_err}")
+                    try:
+                        await sessions_collection.delete_many({"session_name": session_name, "status": {"$ne": "active"}})
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2)
+                    continue
+
+                print(f"  ❌ Failed to load: {err_text}")
+                error_status = "connection_error" if any(x in err_text.lower() for x in ["timeout", "connection", "network", "flood", "reset"]) else "load_error"
+                placeholder_phone = normalize_session_phone(None, session_name=session_name)
+                await sessions_collection.update_one(
+                    {"phone": placeholder_phone},
+                    {
+                        "$set": {
+                            "session_name": session_name,
+                            "session_label": build_session_label(session_name=session_name),
+                            "status": error_status,
+                            "last_error": err_text[:300],
+                            "last_check": datetime.utcnow(),
+                            "updated_at": datetime.utcnow()
+                        },
+                        "$setOnInsert": {"created_at": datetime.utcnow()}
+                    },
+                    upsert=True
+                )
+                failed_count += 1
+                handled = True
+                break
+
+        if not handled:
             failed_count += 1
-    
+
     print("\n" + "="*50)
     print(f"✅ Successfully loaded: {loaded_count} account(s)")
     if failed_count > 0:
         print(f"❌ Failed to load: {failed_count} account(s)")
     print("="*50)
-    
-    if active_clients:
+
+    if get_active_clients():
         print(f"👑 MASTER CLIENT: Client #0")
-        if len(active_clients) > 1:
-            print(f"👷 WORKER CLIENTS: {len(active_clients) - 1} workers")
+        if len(get_active_clients()) > 1:
+            print(f"👷 WORKER CLIENTS: {len(get_active_clients()) - 1} workers")
     else:
         print("⚠️ WARNING: No active clients available!")
     print("="*50 + "\n")
 
 async def load_all_clients():
     """Load clients from database (legacy method - kept for backward compatibility)"""
-    global active_clients
-    active_clients = []  # Clear existing clients
-    
+    get_active_clients().clear()
+
     print("\n" + "="*50)
     print("🔄 Loading Telegram Accounts from Database...")
     print("="*50)
-    
+
     sessions = await get_all_sessions()
 
     if not sessions:
@@ -702,24 +1102,30 @@ async def load_all_clients():
         return
 
     print(f"📊 Found {len(sessions)} session(s) in database\n")
-    
+
     loaded_count = 0
     failed_count = 0
 
     for idx, session in enumerate(sessions, 1):
         phone = session.get('phone', 'Unknown')
         print(f"[{idx}/{len(sessions)}] Processing: {phone}")
-        
+
         try:
             # Create and connect client with stored API credentials
             api_id = session.get('api_id')
             api_hash = session.get('api_hash')
-            
+            session_str = session.get('session_string')
+
+            if not session_str:
+                print(f"  ⚠️ No session_string found — skipping (malformed entry)")
+                failed_count += 1
+                continue
+
             if not api_id or not api_hash:
                 print(f"  ⚠️ Missing API credentials, using defaults")
-            
+
             client = await create_telegram_client(
-                session['session_string'],
+                session_str,
                 api_id=api_id,
                 api_hash=api_hash
             )
@@ -731,7 +1137,7 @@ async def load_all_clients():
             except Exception as conn_err:
                 print(f"  ❌ Connection failed: {conn_err}")
                 print(f"  💾 Session kept in database - may recover on next restart")
-                
+
                 # Mark connection error but DON'T delete
                 await sessions_collection.update_one(
                     {"phone": phone},
@@ -751,7 +1157,7 @@ async def load_all_clients():
                 if not await client.is_user_authorized():
                     print(f"  ❌ Session not authorized (expired/invalid)")
                     print(f"  💾 Session kept in database for re-authentication")
-                    
+
                     # Mark session as inactive but DON'T delete
                     await sessions_collection.update_one(
                         {"phone": phone},
@@ -769,7 +1175,7 @@ async def load_all_clients():
             except Exception as auth_err:
                 print(f"  ❌ Auth check failed: {auth_err}")
                 print(f"  💾 Session kept in database for troubleshooting")
-                
+
                 # Mark session with error but DON'T delete
                 await sessions_collection.update_one(
                     {"phone": phone},
@@ -791,7 +1197,7 @@ async def load_all_clients():
                 name = me.first_name or "Unknown"
                 username = f"@{me.username}" if me.username else "No username"
                 print(f"  ✅ Loaded: {name} {username} ({phone})")
-                
+
                 # Mark session as active and working
                 await sessions_collection.update_one(
                     {"phone": phone},
@@ -804,20 +1210,30 @@ async def load_all_clients():
                         }
                     }
                 )
-                
-                # Add to active clients
-                active_clients.append(client)
+
+                # Add to active clients (without full reload)
+                await register_client_as_active(
+                    client,
+                    user_data=me,
+                    phone=phone,
+                    session_name=session.get('session_name')
+                )
                 loaded_count += 1
             except Exception as e:
                 print(f"  ⚠️ Error getting user info: {e}")
                 # Still add to active clients if connection is valid
-                active_clients.append(client)
+                await register_client_as_active(
+                    client,
+                    user_data=None,
+                    phone=phone,
+                    session_name=session.get('session_name')
+                )
                 loaded_count += 1
 
         except Exception as e:
             print(f"  ❌ Failed to load: {e}")
             print(f"  💾 Session kept in database for debugging")
-            
+
             # Mark general error but DON'T delete
             await sessions_collection.update_one(
                 {"phone": phone},
@@ -838,10 +1254,10 @@ async def load_all_clients():
     print("="*50)
 
     # Set master client for monitoring if available
-    if active_clients:
+    if get_active_clients():
         print(f"👑 MASTER CLIENT: Client #0")
-        if len(active_clients) > 1:
-            print(f"👷 WORKER CLIENTS: {len(active_clients) - 1} workers")
+        if len(get_active_clients()) > 1:
+            print(f"👷 WORKER CLIENTS: {len(get_active_clients()) - 1} workers")
     else:
         print("⚠️ WARNING: No active clients available!")
     print("="*50 + "\n")
@@ -874,25 +1290,25 @@ async def process_vote_order(client, channel_id, message_id, option_index, poll_
         if not messages or not messages.media or not hasattr(messages.media, 'poll'):
             print(f"Error: Message {message_id} doesn't contain a valid poll")
             return False
-        
+
         poll = messages.media.poll
         poll_results = messages.media.results
-        
+
         # Handle random vote selection
         if option_index == "random":
             if poll_options_count:
                 option_index = random.randint(0, poll_options_count - 1)
             else:
                 option_index = random.randint(0, len(poll.answers) - 1)
-        
+
         # Validate option index
         if option_index >= len(poll.answers):
             print(f"Error: Invalid option index {option_index}, poll has {len(poll.answers)} options")
             return False
-        
+
         # Get the correct option bytes from the poll
         selected_option = poll.answers[option_index].option
-        
+
         # Create the vote request with correct option format
         await client(functions.messages.SendVoteRequest(
             peer=input_channel,
@@ -1275,7 +1691,7 @@ def get_channel_select_keyboard():
         resize_keyboard=True
     )
 
-def get_my_channels_keyboard(channels, active_channel_ids: set = None):
+def get_my_channels_keyboard(channels, active_channel_ids: set = None, service_type: str = ""):
     """Create inline channel picker for My Channels with green/red status dots."""
     if active_channel_ids is None:
         active_channel_ids = set()
@@ -1283,10 +1699,12 @@ def get_my_channels_keyboard(channels, active_channel_ids: set = None):
     for channel in channels:
         cid = channel['channel_id']
         dot = "🟢" if cid in active_channel_ids else "🔴"
+        # Encode service_type so the callback can filter orders correctly
+        cb_data = f"my_channel:{cid}:{service_type}" if service_type else f"my_channel:{cid}"
         builder.row(
             InlineKeyboardButton(
                 text=f"{dot} {channel['channel_title']}",
-                callback_data=f"my_channel:{cid}"
+                callback_data=cb_data
             )
         )
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_menu"))
@@ -1348,6 +1766,8 @@ class AdminStates(StatesGroup):
     POWERS_MANAGEMENT = State()
     SELECTING_ADMIN_FOR_POWERS = State()
     MANAGING_SPECIFIC_ADMIN_POWERS = State()
+    SETTING_UPI_QR = State()
+    SETTING_UPI_ID = State()
 
 class VoteOrderStates(StatesGroup):
     WAITING_FOR_CHANNEL = State()
@@ -1598,10 +2018,10 @@ async def active_orders_handler(message: types.Message):
             remaining = max(0, quantity - delivered)
             poll_question = order.get("poll_question", "N/A")
             option_text = order.get("option_text", "N/A")
-            
+
             status_emoji = "🟢" if order["status"] == "processing" else "🟡"
             status_text = "Active" if order["status"] == "processing" else "Confirmed"
-            
+
             text = (
                 f"🗳️ <b>Poll Vote Order</b>\n\n"
                 f"{status_emoji} <b>Status:</b> {status_text}\n"
@@ -1614,9 +2034,14 @@ async def active_orders_handler(message: types.Message):
                 f"⏳ <b>Remaining:</b> {remaining}\n"
                 f"💵 <b>Cost:</b> ${charge:.4f}\n"
             )
-            
-            # Simplified buttons for poll votes
+
+            # Buttons for poll votes (with delay and cancel)
+            vote_delay_sec = order.get("custom_delay_seconds", 10)
+            text += f"⏱️ <b>Delivery Delay:</b> {vote_delay_sec}s\n"
             builder = InlineKeyboardBuilder()
+            builder.row(
+                InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"vote_delay:{order['_id']}")
+            )
             builder.row(
                 InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}")
             )
@@ -1788,7 +2213,7 @@ async def start_votes_order(message: types.Message, state: FSMContext):
     """Start vote ordering - Step 1: Share channel/group"""
     await state.clear()
     await state.update_data(service_type="poll_votes")
-    
+
     await message.answer(
         "🗳️ <b>Order Votes - Step 1</b>\n\n"
         "📢 Select the channel or group where the poll is posted:\n\n"
@@ -1814,12 +2239,72 @@ async def start_votes_order(message: types.Message, state: FSMContext):
                         )
                     )
                 ],
+                [KeyboardButton(text="📢 My Vote Orders")],
                 [KeyboardButton(text="⬅️ Cancel Order")]
             ],
             resize_keyboard=True
         )
     )
     await state.set_state(VoteOrderStates.WAITING_FOR_CHANNEL)
+
+# Vote Order Handler - Step 2 alt: My Vote Orders
+@dp.message(VoteOrderStates.WAITING_FOR_CHANNEL, F.text == "📢 My Vote Orders")
+async def vote_my_orders(message: types.Message, state: FSMContext):
+    """Show active vote orders from vote section."""
+    user_id = message.from_user.id
+    active_orders = await orders_collection.find({
+        "user_id": user_id,
+        "status": {"$in": ["confirmed", "processing"]},
+        "service_identifier": "poll_votes"
+    }).to_list(None)
+
+    await state.clear()
+
+    if not active_orders:
+        await message.answer(
+            "📢 You have no active vote orders.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return
+
+    await message.answer(f"📢 <b>Your Active Vote Orders ({len(active_orders)}):</b>", parse_mode="HTML")
+    for order in active_orders:
+        channel_title = order.get("channel_title", "Unknown")
+        poll_question = order.get("poll_question", "N/A")
+        option_text = order.get("option_text", "N/A")
+        quantity = order.get("quantity", 0)
+        delivered = order.get("delivered_votes", 0)
+        remaining = max(0, quantity - delivered)
+        charge = order.get("charge", 0.0)
+        vote_delay_sec = order.get("custom_delay_seconds", 10) or 10
+
+        status_emoji = "🟢" if order["status"] == "processing" else "🟡"
+        status_text = "Active" if order["status"] == "processing" else "Confirmed"
+
+        text = (
+            f"🗳️ <b>Poll Vote Order</b>\n\n"
+            f"{status_emoji} <b>Status:</b> {status_text}\n"
+            f"📛 <b>Channel/Group:</b> {channel_title}\n\n"
+            f"❓ <b>Poll Question:</b> {html_escape(poll_question[:100])}\n"
+            f"✅ <b>Selected Option:</b> {html_escape(option_text[:50])}\n\n"
+            f"📊 <b>Total Votes:</b> {quantity}\n"
+            f"✅ <b>Delivered:</b> {delivered}\n"
+            f"⏳ <b>Remaining:</b> {remaining}\n"
+            f"⏱️ <b>Delivery Delay:</b> {vote_delay_sec}s\n"
+            f"💵 <b>Cost:</b> ${charge:.4f}\n"
+        )
+
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(text="⏱️ Delay Adjustment", callback_data=f"vote_delay:{order['_id']}")
+        )
+        builder.row(
+            InlineKeyboardButton(text="❌ Cancel Order", callback_data=f"cancel_order:{order['_id']}")
+        )
+        await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+
+    await message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
+
 
 # Vote Order Handler - Step 2: Channel Shared
 @dp.message(VoteOrderStates.WAITING_FOR_CHANNEL, F.chat_shared)
@@ -1828,12 +2313,12 @@ async def vote_channel_shared(message: types.Message, state: FSMContext):
     chat_info = message.chat_shared
     channel_id = chat_info.chat_id
     channel_title = chat_info.title or "Shared Channel"
-    
+
     await state.update_data(
         channel_id=channel_id,
         channel_title=channel_title
     )
-    
+
     await message.answer(
         f"✅ <b>Channel Selected:</b> {html_escape(channel_title)}\n\n"
         "🔗 <b>Step 2:</b> Please send the <b>public link or invite link</b> of this channel/group\n\n"
@@ -1859,9 +2344,9 @@ async def vote_invite_link_received(message: types.Message, state: FSMContext):
             reply_markup=get_main_menu_keyboard()
         )
         return
-    
+
     invite_link = message.text.strip()
-    
+
     # Validate link format
     if not any(x in invite_link.lower() for x in ['t.me/', 'telegram.me/', 'telegram.dog/']):
         await message.answer(
@@ -1871,12 +2356,12 @@ async def vote_invite_link_received(message: types.Message, state: FSMContext):
             "• https://t.me/+xxxxx"
         )
         return
-    
+
     await state.update_data(invite_link=invite_link)
-    
+
     data = await state.get_data()
     channel_title = data.get('channel_title', 'Channel')
-    
+
     await message.answer(
         f"✅ <b>Link Saved</b>\n\n"
         f"📢 <b>Channel/Group:</b> {html_escape(channel_title)}\n"
@@ -1905,19 +2390,19 @@ async def vote_post_forwarded(message: types.Message, state: FSMContext):
             )
         )
         return
-    
+
     # Extract poll information
     poll = message.poll
     poll_options = [opt.text for opt in poll.options]
     content_id = message.forward_from_message_id if message.forward_from_message_id else message.message_id
-    
+
     await state.update_data(
         poll_id=poll.id,
         poll_question=poll.question,
         poll_options=poll_options,
         content_id=content_id
     )
-    
+
     # Show poll options for selection
     builder = ReplyKeyboardBuilder()
     for i, option in enumerate(poll_options):
@@ -1925,7 +2410,7 @@ async def vote_post_forwarded(message: types.Message, state: FSMContext):
         builder.add(KeyboardButton(text=f"{i+1}. {option_display}"))
     builder.adjust(1)  # One option per row
     builder.row(KeyboardButton(text="⬅️ Cancel Order"))
-    
+
     await message.answer(
         f"✅ <b>Poll Detected!</b>\n\n"
         f"❓ <b>Question:</b> {html_escape(poll.question)}\n\n"
@@ -1948,20 +2433,20 @@ async def vote_option_selected(message: types.Message, state: FSMContext):
             reply_markup=get_main_menu_keyboard()
         )
         return
-    
+
     data = await state.get_data()
     poll_options = data.get('poll_options', [])
-    
+
     # Parse selected option number
     try:
         # Extract number from format "1. Option Text"
         option_num = int(message.text.split(".")[0].strip())
         if option_num < 1 or option_num > len(poll_options):
             raise ValueError("Invalid option number")
-        
+
         selected_option_index = option_num - 1
         selected_option_text = poll_options[selected_option_index]
-        
+
     except:
         await message.answer(
             "❌ Invalid selection!\n\n"
@@ -1969,23 +2454,42 @@ async def vote_option_selected(message: types.Message, state: FSMContext):
             reply_markup=message.reply_markup
         )
         return
-    
+
     await state.update_data(
         option_index=selected_option_index,
         option_text=selected_option_text
     )
-    
+
+    # Build dynamic vote quantity buttons based on active accounts
+    max_votes = max(1, len(get_active_clients()))
+    if max_votes > 3:
+        mid1 = random.randint(1, max(1, max_votes // 2))
+        mid2 = random.randint(max(mid1 + 1, max_votes // 2), max_votes - 1)
+        vote_btns = [1, mid1, mid2, max_votes]
+    elif max_votes > 1:
+        vote_btns = [1, max_votes]
+    else:
+        vote_btns = [1]
+
+    vote_keyboard = []
+    row = []
+    for v in vote_btns:
+        row.append(KeyboardButton(text=str(v)))
+        if len(row) == 2:
+            vote_keyboard.append(row)
+            row = []
+    if row:
+        vote_keyboard.append(row)
+    vote_keyboard.append([KeyboardButton(text="⬅️ Cancel Order")])
+
     await message.answer(
         f"✅ <b>Option Selected:</b>\n{html_escape(selected_option_text)}\n\n"
         "🔢 <b>Step 5:</b> How many votes do you want?\n\n"
-        "💡 Enter a number (e.g., 100, 500, 1000)",
+        f"💡 Minimum: 1 | Maximum: {max_votes} (based on active accounts)\n"
+        "You can also type a custom number:",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="100"), KeyboardButton(text="500")],
-                [KeyboardButton(text="1000"), KeyboardButton(text="2000")],
-                [KeyboardButton(text="⬅️ Cancel Order")]
-            ],
+            keyboard=vote_keyboard,
             resize_keyboard=True
         )
     )
@@ -2002,45 +2506,46 @@ async def vote_quantity_entered(message: types.Message, state: FSMContext):
             reply_markup=get_main_menu_keyboard()
         )
         return
-    
+
     try:
         quantity = int(message.text)
-        if quantity < 10:
+        if quantity < 1:
             await message.answer(
-                "❌ Minimum order is 10 votes!\n\n"
+                "❌ Minimum order is 1 vote!\n\n"
                 "Please enter a valid quantity:"
             )
             return
-        
-        if quantity > 10000:
+
+        max_allowed = max(1, len(get_active_clients()))
+        if quantity > max_allowed:
             await message.answer(
-                "❌ Maximum order is 10,000 votes per order!\n\n"
+                f"❌ Maximum order is {max_allowed} votes (based on active accounts)!\n\n"
                 "Please enter a valid quantity:"
             )
             return
-        
+
     except ValueError:
         await message.answer(
             "❌ Invalid number!\n\n"
             "Please enter a valid quantity (e.g., 100, 500, 1000):"
         )
         return
-    
+
     # Calculate price
     pricing = await get_pricing()
     price_per_vote = pricing.get('poll_votes', 0.03)
     total_price = round(quantity * price_per_vote, 2)
-    
+
     data = await state.get_data()
     channel_title = data.get('channel_title', 'Channel')
     poll_question = data.get('poll_question', 'Poll')
     option_text = data.get('option_text', 'Option')
-    
+
     await state.update_data(
         quantity=quantity,
         total_price=total_price
     )
-    
+
     # Get user balance
     user = await get_or_create_user(
         message.from_user.id,
@@ -2048,7 +2553,7 @@ async def vote_quantity_entered(message: types.Message, state: FSMContext):
         message.from_user.first_name
     )
     balance = user.get('balance', 0)
-    
+
     # Show confirmation
     confirmation_msg = (
         "📋 <b>Order Summary</b>\n\n"
@@ -2059,7 +2564,7 @@ async def vote_quantity_entered(message: types.Message, state: FSMContext):
         f"💰 <b>Total Cost:</b> ${total_price}\n"
         f"💳 <b>Your Balance:</b> ${balance:.2f}\n\n"
     )
-    
+
     if balance >= total_price:
         confirmation_msg += "✅ Sufficient balance! Confirm to proceed."
         keyboard = [
@@ -2074,7 +2579,7 @@ async def vote_quantity_entered(message: types.Message, state: FSMContext):
             [KeyboardButton(text="💳 Add Balance")],
             [KeyboardButton(text="⬅️ Cancel Order")]
         ]
-    
+
     await message.answer(
         confirmation_msg,
         parse_mode="HTML",
@@ -2096,7 +2601,7 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
             reply_markup=get_main_menu_keyboard()
         )
         return
-    
+
     if message.text == "💳 Add Balance":
         await state.clear()
         await message.answer(
@@ -2107,19 +2612,19 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
         # Trigger add balance flow
         await message.answer("Please use '💳 Add Balance' from main menu")
         return
-    
+
     if message.text != "✅ Confirm Order":
         return
-    
+
     data = await state.get_data()
     user_id = message.from_user.id
-    
+
     # FIX: Delete the confirmation message to prevent double-click
     try:
         await message.delete()
     except Exception:
         pass  # Ignore if message already deleted
-    
+
     # Get all required data
     channel_id = data.get('channel_id')
     channel_title = data.get('channel_title')
@@ -2132,11 +2637,11 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
     quantity = data.get('quantity')
     total_price = data.get('total_price')
     poll_options = data.get('poll_options', [])
-    
+
     # Check balance again
     user = await get_or_create_user(user_id, message.from_user.username, message.from_user.first_name)
     balance = user.get('balance', 0)
-    
+
     if balance < total_price:
         await message.answer(
             "❌ Insufficient balance!\n\n"
@@ -2145,21 +2650,21 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
         )
         await state.clear()
         return
-    
+
     # Deduct balance
     await update_user_balance(user_id, -total_price)
-    
+
     # NOW join all clients to channel AFTER payment confirmation
     processing_msg = await message.answer(
         "⏳ Processing your order...\n"
         "Clients are joining the channel...",
         reply_markup=get_main_menu_keyboard()
     )
-    
+
     # Join all clients to channel
-    if active_clients and invite_link:
+    if get_active_clients() and invite_link:
         await join_all_clients_to_channel(channel_id, invite_link)
-    
+
     # Create order in database
     order_id = await create_order(
         user_id=user_id,
@@ -2176,7 +2681,7 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
         option_index=option_index,
         option_text=option_text
     )
-    
+
     # Store invite link for joining
     await add_user_channel(
         user_id=user_id,
@@ -2185,13 +2690,13 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
         is_public='t.me/+' not in invite_link and 'joinchat' not in invite_link,
         invite_link=invite_link
     )
-    
+
     # FIX: Delete processing message and send new confirmation
     try:
         await processing_msg.delete()
     except Exception:
         pass
-    
+
     await message.answer(
         "✅ <b>Order Confirmed!</b>\n\n"
         f"🗳️ <b>Votes:</b> {quantity}\n"
@@ -2203,9 +2708,9 @@ async def vote_order_confirmed(message: types.Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=get_main_menu_keyboard()
     )
-    
+
     await state.clear()
-    
+
     # Start vote delivery in background
     asyncio.create_task(deliver_votes_master_worker(order_id))
 
@@ -2280,7 +2785,7 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
 
     try:
         # Get channel info using Telethon
-        client = active_clients[0] if active_clients else None
+        client = get_active_clients()[0] if get_active_clients() else None
         if not client:
             await message.answer("❌ No active Telegram clients available. Please contact admin.")
             return
@@ -2372,7 +2877,7 @@ async def process_forwarded_post(message: types.Message, state: FSMContext):
                                 target_message_id = forwarded.message_id
                         except Exception as forward_err:
                             print(f"Forwarding failed: {forward_err}")
-                
+
                 if not target_poll:
                     await message.answer("❌ This message doesn't contain a poll. Please forward the specific poll message.")
                     return
@@ -2441,7 +2946,7 @@ async def process_option_selection(message: types.Message, state: FSMContext):
         ],
         resize_keyboard=True
     )
-    
+
     await message.answer(
         f"✅ Selected: {selected_option}\n\n"
         "🗳️ Vote Delivery Type:\n"
@@ -2458,14 +2963,14 @@ async def process_vote_type(message: types.Message, state: FSMContext):
     if message.text == "⬅️ Cancel Order":
         await cancel_order(message, state)
         return
-    
+
     data = await state.get_data()
-    
+
     if message.text == "🎯 Specific Option (Selected)":
         # Keep the selected option_index as is
         vote_mode = "specific"
         await state.update_data(vote_mode=vote_mode)
-        
+
         await message.answer(
             f"✅ Specific votes on: {data.get('selected_option')}\n"
             "🔢 How many votes would you like?\n"
@@ -2473,11 +2978,11 @@ async def process_vote_type(message: types.Message, state: FSMContext):
             reply_markup=get_quantity_keyboard()
         )
         await state.set_state(OrderStates.waiting_for_quantity)
-        
+
     elif message.text == "🎲 Random Votes (All Options)":
         # Set option_index to "random" for random distribution
         await state.update_data(vote_mode="random", option_index="random", selected_option="Random (All Options)")
-        
+
         await message.answer(
             "✅ Random votes on all poll options\n"
             "🔢 How many votes would you like?\n"
@@ -2665,13 +3170,13 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         option_index=data.get('option_index'),
         option_text=data.get('selected_option')
     )
-    
+
     # Store vote mode and poll options for random voting
     if service_identifier == 'poll_votes':
         vote_mode = data.get('vote_mode', 'specific')
         poll_options = data.get('poll_options', [])
         invite_link = data.get('invite_link')
-        
+
         await orders_collection.update_one(
             {"_id": order_id},
             {"$set": {
@@ -2683,11 +3188,11 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         )
 
     await update_user_balance(user_id, -charge)
-    
+
     # FIXED: Join channel with workers ONLY after balance deduction
     if service_identifier == 'poll_votes':
         invite_link = data.get('invite_link')
-        if invite_link and active_clients:
+        if invite_link and get_active_clients():
             asyncio.create_task(join_all_clients_to_channel(data.get('channel_id'), invite_link))
 
     # --- Styled Confirmation Message ---
@@ -2736,30 +3241,47 @@ async def my_channels_handler(message: types.Message, state: FSMContext):
         await message.answer("You haven't added any channels yet.")
         return
 
+    # Read service_type BEFORE clearing state
+    data = await state.get_data()
+    service_type = data.get("service_type", "")
     await state.clear()
 
-    # Find which channels have an active order
-    active_orders = await orders_collection.find({
+    # Build the active-order query — filter by service_type when known
+    order_query = {
         "user_id": user_id,
         "status": {"$in": ["confirmed", "processing"]}
-    }, {"channel_id": 1}).to_list(None)
+    }
+    if service_type in ("views_by_followers", "reactions_by_followers"):
+        order_query["service_identifier"] = service_type
+
+    active_orders = await orders_collection.find(order_query, {"channel_id": 1}).to_list(None)
     active_channel_ids = {o["channel_id"] for o in active_orders}
 
+    # Human-readable service label for the heading
+    if service_type == "views_by_followers":
+        svc_label = "📊 Views"
+    elif service_type == "reactions_by_followers":
+        svc_label = "❤️‍🔥 Reactions"
+    else:
+        svc_label = "All Services"
+
     await message.answer(
-        "📢 Select a channel to view its order details:",
-        reply_markup=get_my_channels_keyboard(channels, active_channel_ids)
+        f"📢 Select a channel to view its <b>{svc_label}</b> orders:",
+        parse_mode="HTML",
+        reply_markup=get_my_channels_keyboard(channels, active_channel_ids, service_type)
     )
 
 
 @dp.callback_query(F.data.startswith("my_channel:"))
 async def my_channel_select_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    channel_id_raw = callback.data.split(":", 1)[1]
-
+    # Format: my_channel:{channel_id} or my_channel:{channel_id}:{service_type}
+    parts = callback.data.split(":")
     try:
-        channel_id = int(channel_id_raw)
-    except ValueError:
+        channel_id = int(parts[1])
+    except (IndexError, ValueError):
         return await callback.answer("❌ Invalid channel selection", show_alert=True)
+    service_type = parts[2] if len(parts) >= 3 else ""
 
     selected_channel = await channels_collection.find_one({
         "user_id": user_id,
@@ -2779,7 +3301,8 @@ async def my_channel_select_callback(callback: types.CallbackQuery):
         chat_id=callback.message.chat.id,
         user_id=user_id,
         channel_id=channel_id,
-        channel_title=selected_channel.get("channel_title", "Unknown Channel")
+        channel_title=selected_channel.get("channel_title", "Unknown Channel"),
+        service_type=service_type
     )
 
 
@@ -2833,7 +3356,7 @@ async def change_order_speed(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("show_speed_options:"))
 async def show_speed_options(callback: types.CallbackQuery):
     order_id = callback.data.split(":")[1]
-    
+
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="🐌 Slow (7-8 hrs)", callback_data=f"change_speed:{order_id}:slow"),
@@ -2846,7 +3369,7 @@ async def show_speed_options(callback: types.CallbackQuery):
         width=2
     )
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
-    
+
     await callback.message.edit_reply_markup(reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("back_to_order:"))
@@ -2880,7 +3403,7 @@ async def send_updated_order_message(callback: types.CallbackQuery, order_id: st
     created = order.get("created_at")
     is_paused = order.get("is_paused", False)
     speed_multiplier = order.get("speed_multiplier", 1.0)
-    
+
     is_muted = order.get("is_muted", False)
     mute_str = "🔕 ON" if is_muted else "🔔 OFF"
     random_views = order.get("random_views", 0)
@@ -2945,11 +3468,11 @@ async def toggle_mute_campaign(callback: types.CallbackQuery):
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_mute = order.get("is_muted", False)
     new_mute = not current_mute
     await orders_collection.update_one({"_id": ObjectId(order_id)}, {"$set": {"is_muted": new_mute}})
-    
+
     mute_label = "🔕 Muted" if new_mute else "🔔 Unmuted"
     await send_updated_order_message(callback, order_id, f"{mute_label}")
 
@@ -2959,10 +3482,10 @@ async def toggle_highlow_setting(callback: types.CallbackQuery):
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_highlow = order.get("high_low_descending", False)
     await orders_collection.update_one({"_id": ObjectId(order_id)}, {"$set": {"high_low_descending": not current_highlow}})
-    
+
     await send_updated_order_message(callback, order_id, "High -> Low toggled")
 
 @dp.callback_query(F.data.startswith("speed_menu:"))
@@ -2988,17 +3511,17 @@ async def edit_order_settings(callback: types.CallbackQuery):
     """Show delay adjustment options for today's deliverable quantity."""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     total_delay_seconds = get_order_delay_seconds(order)
-    
+
     builder = InlineKeyboardBuilder()
-    
+
     # Simple delay display
     delay_display = f"{total_delay_seconds}s"
-    
+
     # Determine service type from order
     service_identifier = order.get('service_identifier', '')
     if 'view' in service_identifier.lower():
@@ -3009,22 +3532,22 @@ async def edit_order_settings(callback: types.CallbackQuery):
         per_post_qty = int(order.get("reactions_per_post", 0) or 0)
 
     remaining_today_posts, daily_quantity, daily_eta = get_daily_delivery_snapshot(order, per_post_qty)
-    
+
     # Simple -1s and +1s buttons
     builder.row(
         InlineKeyboardButton(text="◀️ -1s", callback_data=f"adjust_seconds:{order_id}:-1"),
         InlineKeyboardButton(text="▶️ +1s", callback_data=f"adjust_seconds:{order_id}:1"),
         width=2
     )
-    
+
     builder.row(InlineKeyboardButton(text="◀️ Back", callback_data=f"back_to_order:{order_id}"))
-    
+
     text = (
         f"<b>Delay {delay_display}</b>\n\n"
         f"⏳ Today remaining: {remaining_today_posts} post(s)\n"
         f"📦 You will receive {daily_quantity} {service_type} in {daily_eta}"
     )
-    
+
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await callback.answer()
 
@@ -3034,19 +3557,19 @@ async def adjust_seconds_handler(callback: types.CallbackQuery):
     parts = callback.data.split(":")
     order_id = parts[1]
     adjustment = int(parts[2])
-    
+
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_delay_seconds = order.get("custom_delay_seconds", 19)
     new_delay_seconds = max(1, current_delay_seconds + adjustment)
-    
+
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {"$set": {"custom_delay_seconds": new_delay_seconds, "updated_at": datetime.utcnow()}}
     )
-    
+
     await callback.answer(f"✅ Delay: {new_delay_seconds}s")
     await edit_order_settings(callback)
 
@@ -3066,24 +3589,138 @@ async def delay_info(callback: types.CallbackQuery):
     await callback.answer("ℹ️ Adjust delay using -1s or +1s buttons", show_alert=True)
 
 
+# ===== VOTE ORDER DELAY ADJUSTMENT =====
+@dp.callback_query(F.data.startswith("vote_delay:"))
+async def vote_delay_settings(callback: types.CallbackQuery):
+    """Show delay adjustment for vote orders (same UI as views/reactions)."""
+    order_id = callback.data.split(":")[1]
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+
+    current_delay = order.get("custom_delay_seconds", 10)
+    if current_delay is None:
+        current_delay = 10
+
+    quantity = order.get("quantity", 0)
+    delivered = order.get("delivered_votes", 0)
+    remaining = max(0, quantity - delivered)
+    clients_count = max(1, get_available_account_count())
+    eta = calculate_delivery_time(remaining, current_delay, clients_count)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="◀️ -1s", callback_data=f"vote_adj:{order_id}:-1"),
+        InlineKeyboardButton(text="▶️ +1s", callback_data=f"vote_adj:{order_id}:1"),
+        width=2
+    )
+    builder.row(InlineKeyboardButton(text="◀️ Back", callback_data=f"vote_back:{order_id}"))
+
+    text = (
+        f"<b>⏱️ Vote Delay: {current_delay}s</b>\n\n"
+        f"⏳ Remaining votes: {remaining}\n"
+        f"📦 Estimated delivery: {eta}\n\n"
+        f"<i>Minimum delay: 10s | No maximum limit</i>"
+    )
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("vote_adj:"))
+async def vote_adjust_delay(callback: types.CallbackQuery):
+    """Adjust vote order delay by seconds."""
+    parts = callback.data.split(":")
+    order_id = parts[1]
+    adjustment = int(parts[2])
+
+    order = await orders_collection.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        return await callback.answer("❌ Order not found.", show_alert=True)
+
+    current_delay = order.get("custom_delay_seconds", 10)
+    if current_delay is None:
+        current_delay = 10
+
+    new_delay = max(10, current_delay + adjustment)  # minimum 10s for votes
+
+    await orders_collection.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"custom_delay_seconds": new_delay, "updated_at": datetime.utcnow()}}
+    )
+
+    await callback.answer(f"✅ Delay: {new_delay}s")
+    # Refresh the delay screen
+    order["custom_delay_seconds"] = new_delay
+    quantity = order.get("quantity", 0)
+    delivered = order.get("delivered_votes", 0)
+    remaining = max(0, quantity - delivered)
+    clients_count = max(1, get_available_account_count())
+    eta = calculate_delivery_time(remaining, new_delay, clients_count)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="◀️ -1s", callback_data=f"vote_adj:{order_id}:-1"),
+        InlineKeyboardButton(text="▶️ +1s", callback_data=f"vote_adj:{order_id}:1"),
+        width=2
+    )
+    builder.row(InlineKeyboardButton(text="◀️ Back", callback_data=f"vote_back:{order_id}"))
+
+    text = (
+        f"<b>⏱️ Vote Delay: {new_delay}s</b>\n\n"
+        f"⏳ Remaining votes: {remaining}\n"
+        f"📦 Estimated delivery: {eta}\n\n"
+        f"<i>Minimum delay: 10s | No maximum limit</i>"
+    )
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+
+
+@dp.callback_query(F.data.startswith("vote_back:"))
+async def vote_back_from_delay(callback: types.CallbackQuery):
+    """Go back from vote delay screen - delete and show main menu."""
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()
+    await bot.send_message(
+        callback.message.chat.id,
+        "Use '📦 Active Orders' to view your vote orders.",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+
 # ===== EDIT ORDER PARAMETERS =====
 async def show_edit_interface(message, state: FSMContext, order_id):
-    """Display the order editing interface with keyboard buttons"""
+    """Display the order editing interface — supports both increase and decrease."""
     data = await state.get_data()
     new_views = data.get("new_views_per_post", 0)
     new_posts = data.get("new_posts_per_day", 0)
-    new_days = data.get("new_days", 0)
+    new_days  = data.get("new_days", 0)
     delivered = data.get("delivered_amount", 0)
-    service_type = data.get("service_type")
-    metric_label = "Reactions" if service_type == "reactions_by_followers" else "Views"
-    max_limit = get_per_post_limit()
+    service_type  = data.get("service_type")
+    metric_label  = "Reactions" if service_type == "reactions_by_followers" else "Views"
+    max_limit     = get_per_post_limit()
+
+    # Clamp per-post quantity to system max
     new_views = clamp_per_post_quantity(new_views)
     await state.update_data(new_views_per_post=new_views)
-    
+
     original_total = data.get("original_total_views", 0)
-    new_total = new_views * new_posts * new_days
-    
-    # Calculate pricing
+    new_total      = new_views * new_posts * new_days
+
+    # Floor: cannot reduce below already-delivered units
+    min_total = max(1, int(delivered))
+    if new_total < min_total:
+        # Clamp — try to fix by bumping views_per_post
+        new_views = max(1, min_total // max(1, new_posts * new_days))
+        new_views = clamp_per_post_quantity(new_views)
+        new_total = new_views * new_posts * new_days
+        await state.update_data(new_views_per_post=new_views)
+
+    # ── Pricing ───────────────────────────────────────────────────────────
     is_reactions = service_type == "reactions_by_followers"
     if is_reactions:
         original_price = await calculate_reactions_charge(
@@ -3098,84 +3735,90 @@ async def show_edit_interface(message, state: FSMContext, order_id):
             data.get("original_posts_per_day"),
             data.get("original_days")
         )
-        # Note: calculate_views_charge expects total_views, not views_per_post
-        new_total_views_calc = new_views * new_posts * new_days
-        new_price = await calculate_views_charge(new_total_views_calc, new_posts, new_days)
-    
-    price_diff = new_price - original_price
-    
-    # Only allow service increase - check if trying to reduce
-    if new_total < original_total:
-        # Reset to original if reduced
-        new_views = data.get("original_views_per_post")
-        new_posts = data.get("original_posts_per_day")
-        new_days = data.get("original_days")
-        new_total = original_total
-        new_price = original_price
-        price_diff = 0
-        await state.update_data(
-            new_views_per_post=new_views,
-            new_posts_per_day=new_posts,
-            new_days=new_days
+        new_price = await calculate_views_charge(new_total, new_posts, new_days)
+
+    # Pro-rata refund for any cancelled undelivered units
+    if new_total < original_total and original_total > 0:
+        units_cancelled = original_total - new_total
+        price_per_unit  = original_price / original_total
+        refund_amount   = units_cancelled * price_per_unit
+        price_diff      = -refund_amount          # negative = money back
+        refund_inr      = await usd_to_inr_converter(refund_amount)
+        price_text = (
+            f"💚 <b>Refund:</b> ${refund_amount:.4f} ({refund_inr})\n"
+            f"<i>(Pro-rata for {units_cancelled} undelivered {metric_label})</i>"
         )
-    
-    # Price display - only show extra cost
-    if price_diff > 0:
-        price_text = f"💰 <b>Extra Charge:</b> ₹{abs(price_diff):.4f}"
+    elif new_total > original_total:
+        price_diff   = new_price - original_price
+        extra_inr    = await usd_to_inr_converter(price_diff)
+        price_text   = f"💰 <b>Extra Charge:</b> ${price_diff:.4f} ({extra_inr})"
     else:
-        price_text = f"💰 <b>Extra Charge:</b> ₹0.0000 (No changes)"
-    
+        price_diff = 0
+        price_text = f"💰 <b>Extra Charge:</b> $0.0000 (No changes)"
+
+    undelivered = max(0, original_total - int(delivered))
     text = (
         f"⚙️ <b>Edit Order Settings</b>\n"
-        f"<i>Note: केवल service बढ़ाई जा सकती है</i>\n\n"
+        f"<i>Increase or reduce undelivered quantity.\nAlready delivered cannot be refunded.</i>\n\n"
         f"<b>📊 Max {metric_label} Limit:</b> {max_limit}\n\n"
         f"📊 <b>Total {metric_label}:</b> {new_total}\n"
         f"👀 <b>{metric_label} per Post:</b> {new_views}\n"
         f"📝 <b>Posts Per Day:</b> {new_posts}\n"
         f"📅 <b>No. of Days:</b> {new_days}\n\n"
+        f"✅ <b>Already Delivered:</b> {int(delivered)}\n"
+        f"⏳ <b>Undelivered:</b> {undelivered}\n\n"
         f"{price_text}"
     )
-    
-    # Build keyboard - ONLY INCREMENT BUTTONS
+
+    # ── Keyboard ──────────────────────────────────────────────────────────
     builder = InlineKeyboardBuilder()
-    
-    # Total Views section - only increase buttons
-    builder.row(InlineKeyboardButton(text=f"📊 Total {metric_label}: {new_total}", callback_data="info:total"))
+
+    # Per-post row — label shows per-post value; buttons adjust it (total updates accordingly)
+    builder.row(InlineKeyboardButton(
+        text=f"👀 {metric_label} per Post: {new_views}  (Total: {new_total})",
+        callback_data="info:total"
+    ))
     builder.row(
-        InlineKeyboardButton(text="+10", callback_data=f"edit_adjust:views:10"),
-        InlineKeyboardButton(text="+100", callback_data=f"edit_adjust:views:100"),
-        InlineKeyboardButton(text="+500", callback_data=f"edit_adjust:views:500"),
-        width=3
+        InlineKeyboardButton(text="-100", callback_data="edit_adjust:views:-100"),
+        InlineKeyboardButton(text="-10",  callback_data="edit_adjust:views:-10"),
+        InlineKeyboardButton(text="+10",  callback_data="edit_adjust:views:10"),
+        InlineKeyboardButton(text="+100", callback_data="edit_adjust:views:100"),
+        InlineKeyboardButton(text="+500", callback_data="edit_adjust:views:500"),
+        width=5
     )
-    
-    # Posts Per Day section - only increase buttons
+
+    # Posts Per Day row
     builder.row(InlineKeyboardButton(text=f"📝 Posts Per Day: {new_posts}", callback_data="info:posts"))
     builder.row(
-        InlineKeyboardButton(text="+1", callback_data=f"edit_adjust:posts:1"),
-        InlineKeyboardButton(text="+10", callback_data=f"edit_adjust:posts:10"),
-        InlineKeyboardButton(text="+50", callback_data=f"edit_adjust:posts:50"),
-        width=3
+        InlineKeyboardButton(text="-10", callback_data="edit_adjust:posts:-10"),
+        InlineKeyboardButton(text="-1",  callback_data="edit_adjust:posts:-1"),
+        InlineKeyboardButton(text="+1",  callback_data="edit_adjust:posts:1"),
+        InlineKeyboardButton(text="+10", callback_data="edit_adjust:posts:10"),
+        InlineKeyboardButton(text="+50", callback_data="edit_adjust:posts:50"),
+        width=5
     )
-    
-    # Days section - only increase buttons
+
+    # Days row
     builder.row(InlineKeyboardButton(text=f"📅 No. of Days: {new_days}", callback_data="info:days"))
     builder.row(
-        InlineKeyboardButton(text="+1", callback_data=f"edit_adjust:days:1"),
-        InlineKeyboardButton(text="+15", callback_data=f"edit_adjust:days:15"),
-        InlineKeyboardButton(text="+30", callback_data=f"edit_adjust:days:30"),
-        width=3
+        InlineKeyboardButton(text="-15", callback_data="edit_adjust:days:-15"),
+        InlineKeyboardButton(text="-1",  callback_data="edit_adjust:days:-1"),
+        InlineKeyboardButton(text="+1",  callback_data="edit_adjust:days:1"),
+        InlineKeyboardButton(text="+15", callback_data="edit_adjust:days:15"),
+        InlineKeyboardButton(text="+30", callback_data="edit_adjust:days:30"),
+        width=5
     )
-    
-    # Confirm button - only show if service is increased
-    if new_total > original_total:
-        builder.row(InlineKeyboardButton(text="✅ Confirm Edit", callback_data=f"confirm_edit:{order_id}"))
-    
+
+    # Confirm button — show for any real change
+    if new_total != original_total:
+        label = "✅ Confirm Reduction & Refund" if new_total < original_total else "✅ Confirm & Pay Extra"
+        builder.row(InlineKeyboardButton(text=label, callback_data=f"confirm_edit:{order_id}"))
+
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
-    
-    # Edit or send new message
+
     try:
         await message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
-    except:
+    except Exception:
         await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("edit_order_params:"))
@@ -3183,10 +3826,10 @@ async def edit_order_parameters(callback: types.CallbackQuery, state: FSMContext
     """Show order parameter editing interface"""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     # Get current parameters
     service_type = order.get("service_identifier")
     per_post_field = "reactions_per_post" if service_type == "reactions_by_followers" else "views_per_post"
@@ -3195,10 +3838,10 @@ async def edit_order_parameters(callback: types.CallbackQuery, state: FSMContext
     posts_per_day = order.get("posts_per_day", 0)
     days = order.get("days", 0)
     delivered = await get_delivered_amount(order)
-    
+
     # Calculate current total views
     current_total_views = views_per_post * posts_per_day * days
-    
+
     # Store in state
     await state.update_data(
         order_id=str(order_id),
@@ -3214,73 +3857,105 @@ async def edit_order_parameters(callback: types.CallbackQuery, state: FSMContext
         new_days=days
     )
     await state.set_state(OrderStates.EDITING_ORDER)
-    
+
     # Show editing interface
     await show_edit_interface(callback.message, state, order_id)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("edit_adjust:"))
 async def edit_adjustment_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Handle parameter adjustments"""
+    """Handle parameter adjustments with proper limit feedback."""
     parts = callback.data.split(":")
-    param_type = parts[1]  # views, posts, days
-    adjustment = int(parts[2])
-    
+    param_type = parts[1]   # views, posts, days
+    adjustment  = int(parts[2])
+
     data = await state.get_data()
     order_id = data.get("order_id")
-    
-    # Get current values
+
     new_views = data.get("new_views_per_post", 0)
     new_posts = data.get("new_posts_per_day", 0)
-    new_days = data.get("new_days", 0)
-    
-    # Apply adjustment based on type
+    new_days  = data.get("new_days", 0)
+
     if param_type == "views":
-        new_views = clamp_per_post_quantity(new_views + adjustment)
+        max_limit = get_per_post_limit()
+        desired   = new_views + adjustment
+
+        # ── Hard ceiling: cannot exceed active account count ──────────────
+        if desired > max_limit:
+            await callback.answer(
+                f"⚠️ Cannot increase beyond {max_limit} per post.\n"
+                f"That is the current number of active accounts available for delivery.\n"
+                f"Add more accounts to raise this limit.",
+                show_alert=True
+            )
+            return
+
+        # ── Hard floor: minimum 1 per post ───────────────────────────────
+        if desired < 1:
+            await callback.answer(
+                "⚠️ Minimum is 1 per post. Cannot reduce further.",
+                show_alert=True
+            )
+            return
+
+        new_views = desired
         await state.update_data(new_views_per_post=new_views)
+
     elif param_type == "posts":
-        new_posts = max(1, new_posts + adjustment)
+        desired = new_posts + adjustment
+        if desired < 1:
+            await callback.answer("⚠️ Minimum is 1 post per day.", show_alert=True)
+            return
+        new_posts = desired
         await state.update_data(new_posts_per_day=new_posts)
+
     elif param_type == "days":
-        new_days = max(1, new_days + adjustment)
+        desired = new_days + adjustment
+        if desired < 1:
+            await callback.answer("⚠️ Minimum is 1 day.", show_alert=True)
+            return
+        new_days = desired
         await state.update_data(new_days=new_days)
-    
-    # Refresh interface
+
+    # Refresh the interface with updated values
     await show_edit_interface(callback.message, state, order_id)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("confirm_edit:"))
 async def confirm_edit_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Confirm and apply order edits"""
+    """Confirm and apply order edits — supports both increase (charge) and decrease (refund)."""
     order_id = callback.data.split(":")[1]
     data = await state.get_data()
-    
+
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     if not order:
         await state.clear()
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
-    # Get new parameters
-    new_views = data.get("new_views_per_post", 0)
-    new_posts = data.get("new_posts_per_day", 0)
-    new_days = data.get("new_days", 0)
-    delivered = data.get("delivered_amount", 0)
+
+    new_views      = data.get("new_views_per_post", 0)
+    new_posts      = data.get("new_posts_per_day", 0)
+    new_days       = data.get("new_days", 0)
+    delivered      = int(data.get("delivered_amount", 0))
     per_post_field = data.get("per_post_field", "views_per_post")
-    metric_label = "Reactions" if data.get("service_type") == "reactions_by_followers" else "Views"
-    
-    new_total = new_views * new_posts * new_days
+    service_type   = data.get("service_type", "")
+    metric_label   = "Reactions" if service_type == "reactions_by_followers" else "Views"
     original_total = data.get("original_total_views", 0)
-    
-    # Only allow service increase
-    if new_total < original_total:
+    new_total      = new_views * new_posts * new_days
+
+    # Hard floor: cannot go below already delivered
+    if new_total < delivered:
         await callback.answer(
-            "⚠️ Service को केवल बढ़ाया जा सकता है, कम नहीं किया जा सकता।",
+            f"⚠️ Cannot reduce below already delivered {delivered} {metric_label}.",
             show_alert=True
         )
         return
-    
-    # Calculate price difference
-    is_reactions = data.get("service_type") == "reactions_by_followers"
+
+    if new_total == original_total:
+        await callback.answer("ℹ️ No changes made.", show_alert=True)
+        return
+
+    # ── Price calculation ─────────────────────────────────────────────────
+    is_reactions = service_type == "reactions_by_followers"
     if is_reactions:
         original_price = await calculate_reactions_charge(
             data.get("original_views_per_post"),
@@ -3294,76 +3969,89 @@ async def confirm_edit_handler(callback: types.CallbackQuery, state: FSMContext)
             data.get("original_posts_per_day"),
             data.get("original_days")
         )
-        new_total_views_calc = new_views * new_posts * new_days
-        new_price = await calculate_views_charge(new_total_views_calc, new_posts, new_days)
-    
-    price_diff = new_price - original_price
-    
-    # Check if price difference is positive (service increase)
-    if price_diff <= 0:
-        await callback.answer("❌ No service increase detected.", show_alert=True)
-        return
-    
-    # Get user's current balance
+        new_price = await calculate_views_charge(new_total, new_posts, new_days)
+
+    is_decrease = new_total < original_total
+
+    if is_decrease:
+        # Pro-rata refund only for cancelled UNDELIVERED units
+        units_cancelled = original_total - new_total
+        price_per_unit  = original_price / max(1, original_total)
+        refund_amount   = units_cancelled * price_per_unit
+        balance_delta   = refund_amount          # positive = added to wallet
+        refund_inr      = await usd_to_inr_converter(refund_amount)
+        balance_msg     = (
+            f"💚 <b>Refund:</b> ${refund_amount:.4f} ({refund_inr}) credited to your wallet\n"
+            f"<i>({units_cancelled} cancelled {metric_label} × ${price_per_unit:.6f}/unit)</i>"
+        )
+    else:
+        # Increase — charge extra
+        extra_cost    = new_price - original_price
+        if extra_cost <= 0:
+            await callback.answer("❌ No additional charge calculated.", show_alert=True)
+            return
+        balance_delta = -extra_cost              # negative = deducted from wallet
+        refund_amount = 0
+        extra_inr     = await usd_to_inr_converter(extra_cost)
+        balance_msg   = f"💳 <b>Charged:</b> ${extra_cost:.4f} ({extra_inr}) deducted from your wallet"
+
+    # ── Balance check for increases ───────────────────────────────────────
     user_id = order.get("user_id")
-    user = await users_collection.find_one({"user_id": user_id})
+    user    = await users_collection.find_one({"user_id": user_id})
     current_balance = user.get("balance", 0) if user else 0
-    
-    # Check if sufficient balance
-    if current_balance < price_diff:
+
+    if not is_decrease and current_balance < abs(balance_delta):
         await callback.answer(
             f"❌ Insufficient Balance!\n\n"
-            f"Required: ₹{price_diff:.4f}\n"
+            f"Required: ₹{abs(balance_delta):.4f}\n"
             f"Available: ₹{current_balance:.4f}\n"
-            f"Short by: ₹{(price_diff - current_balance):.4f}\n\n"
+            f"Short by: ₹{abs(balance_delta) - current_balance:.4f}\n\n"
             f"Please recharge your account.",
             show_alert=True
         )
         await state.clear()
         return
-    
-    # Update order in database
+
+    # ── Apply DB updates ──────────────────────────────────────────────────
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {
             "$set": {
-                per_post_field: new_views,
-                "posts_per_day": new_posts,
-                "days": new_days,
-                "updated_at": datetime.utcnow()
+                per_post_field:   new_views,
+                "posts_per_day":  new_posts,
+                "days":           new_days,
+                "updated_at":     datetime.utcnow()
             }
         }
     )
-    
-    # Deduct from balance
+
     await users_collection.update_one(
         {"user_id": user_id},
-        {"$inc": {"balance": -price_diff}}
+        {"$inc": {"balance": balance_delta}}
     )
-    
-    new_balance = current_balance - price_diff
-    balance_msg = f"💳 Extra Cost: ₹{price_diff:.4f} deducted from your balance.\n💰 New Balance: ₹{new_balance:.4f}"
-    
-    # Clear state
+
+    new_balance = current_balance + balance_delta
     await state.clear()
-    
-    # Show success message
+
+    new_balance_inr = await usd_to_inr_converter(new_balance)
+    action_label = "Reduced & Refunded" if is_decrease else "Upgraded"
     await callback.message.edit_text(
-        f"✅ <b>Order Updated Successfully!</b>\n\n"
+        f"✅ <b>Order {action_label} Successfully!</b>\n\n"
         f"📊 <b>New Settings:</b>\n"
         f"👀 {metric_label} per Post: {new_views}\n"
         f"📝 Posts per Day: {new_posts}\n"
         f"📅 Days: {new_days}\n"
-        f"📊 Total {metric_label}: {new_total}\n\n"
-        f"{balance_msg}",
+        f"📊 Total {metric_label}: {new_total}\n"
+        f"✅ Already Delivered: {delivered}\n"
+        f"⏳ Remaining to Deliver: {max(0, new_total - delivered)}\n\n"
+        f"{balance_msg}\n"
+        f"💰 New Balance: ${new_balance:.4f} ({new_balance_inr})",
         parse_mode="HTML"
     )
-    
-    await callback.answer("✅ Order updated successfully!")
-    
-    # Send back to order view after 2 seconds
+    await callback.answer(f"✅ Order {action_label.lower()}!")
+
     await asyncio.sleep(2)
-    await send_updated_order_message(callback, order_id, "Order settings updated")
+    await send_updated_order_message(callback, order_id, f"Order {action_label.lower()}")
 
 
 # ===== AUTO POLL/VOTES FEATURE =====
@@ -3372,14 +4060,14 @@ async def auto_poll_votes_menu(callback: types.CallbackQuery):
     """Auto Poll/Votes quantity management"""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_quantity = order.get("auto_poll_votes_quantity", 0)
     auto_poll_enabled = order.get("auto_poll_enabled", False)
     status_text = "🟢 ON" if auto_poll_enabled else "🔴 OFF"
-    
+
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="-100", callback_data=f"poll_qty:{order_id}:-100"),
@@ -3393,7 +4081,7 @@ async def auto_poll_votes_menu(callback: types.CallbackQuery):
         InlineKeyboardButton(text="+100", callback_data=f"poll_qty:{order_id}:+100"),
         width=3
     )
-    
+
     toggle_text = "🔴 Turn OFF" if auto_poll_enabled else "🟢 Turn ON"
     builder.row(InlineKeyboardButton(text=toggle_text, callback_data=f"toggle_poll:{order_id}"))
     builder.row(
@@ -3401,7 +4089,7 @@ async def auto_poll_votes_menu(callback: types.CallbackQuery):
         width=1
     )
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
-    
+
     text = (
         f"🗳️ <b>Auto Poll/Votes Configuration</b>\n\n"
         f"<b>Status:</b> {status_text}\n"
@@ -3411,7 +4099,7 @@ async def auto_poll_votes_menu(callback: types.CallbackQuery):
         f"Adjust quantity using buttons below:\n"
         f"Click ✅ Confirm to apply changes."
     )
-    
+
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await callback.answer()
 
@@ -3421,19 +4109,19 @@ async def adjust_poll_quantity(callback: types.CallbackQuery):
     parts = callback.data.split(":")
     order_id = parts[1]
     adjustment = int(parts[2])
-    
+
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_qty = order.get("auto_poll_votes_quantity", 0)
     new_qty = max(0, current_qty + adjustment)
-    
+
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {"$set": {"auto_poll_votes_quantity": new_qty, "updated_at": datetime.utcnow()}}
     )
-    
+
     await callback.answer(f"✅ Poll Quantity: {new_qty}")
     await auto_poll_votes_menu(callback)
 
@@ -3442,10 +4130,10 @@ async def confirm_poll_handler(callback: types.CallbackQuery):
     """Confirm auto poll settings and return to order view"""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     poll_qty = order.get("auto_poll_votes_quantity", 0)
     poll_status = "ON" if order.get("auto_poll_enabled", False) else "OFF"
     await send_updated_order_message(callback, order_id, f"✅ Auto Poll confirmed: {poll_status} ({poll_qty})")
@@ -3456,18 +4144,18 @@ async def toggle_auto_poll(callback: types.CallbackQuery):
     """Toggle auto poll votes ON/OFF"""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_status = order.get("auto_poll_enabled", False)
     new_status = not current_status
-    
+
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {"$set": {"auto_poll_enabled": new_status, "updated_at": datetime.utcnow()}}
     )
-    
+
     await auto_poll_votes_menu(callback)
 
 
@@ -3477,18 +4165,18 @@ async def night_mode_toggle(callback: types.CallbackQuery):
     """Toggle night mode for slower delivery during night hours"""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_status = order.get("night_mode_enabled", False)
     new_status = not current_status
-    
+
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {"$set": {"night_mode_enabled": new_status, "updated_at": datetime.utcnow()}}
     )
-    
+
     status_text = "🟢 ON" if new_status else "🔴 OFF"
     await send_updated_order_message(callback, order_id, f"🌙 Night Mode: {status_text}")
 
@@ -3499,12 +4187,12 @@ async def edit_random_views(callback: types.CallbackQuery):
     """Edit random views setting"""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_random = order.get("random_views", 0)
-    
+
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="-5", callback_data=f"random_adj:{order_id}:-5"),
@@ -3519,14 +4207,14 @@ async def edit_random_views(callback: types.CallbackQuery):
         width=1
     )
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
-    
+
     text = (
         f"🔀 <b>Random Views Adjustment</b>\n\n"
         f"Current Random Views: {current_random}\n\n"
         f"Adjust using buttons below:\n"
         f"Click ✅ Confirm to apply changes."
     )
-    
+
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await callback.answer()
 
@@ -3536,19 +4224,19 @@ async def adjust_random_views(callback: types.CallbackQuery):
     parts = callback.data.split(":")
     order_id = parts[1]
     adjustment = int(parts[2])
-    
+
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     current_random = order.get("random_views", 0)
     new_random = max(0, current_random + adjustment)  # Prevent negative values
-    
+
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {"$set": {"random_views": new_random, "updated_at": datetime.utcnow()}}
     )
-    
+
     await callback.answer(f"✅ Random Views: ±{new_random}")
     await edit_random_views(callback)
 
@@ -3558,10 +4246,10 @@ async def confirm_random_handler(callback: types.CallbackQuery):
     """Confirm random views adjustments and return to order view"""
     order_id = callback.data.split(":")[1]
     order = await orders_collection.find_one({"_id": ObjectId(order_id)})
-    
+
     if not order:
         return await callback.answer("❌ Order not found.", show_alert=True)
-    
+
     random_views = order.get("random_views", 0)
     await callback.answer(f"✅ Random Views confirmed: ±{random_views}")
     await send_updated_order_message(callback, order_id, f"✅ Random Views confirmed: ±{random_views}")
@@ -3576,15 +4264,15 @@ async def random_info(callback: types.CallbackQuery):
 async def combi_speed_feature(callback: types.CallbackQuery):
     """Combination speed settings"""
     order_id = callback.data.split(":")[1]
-    
+
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔄 Normal + Night Mode", callback_data=f"combi_apply:{order_id}:normal_night"))
     builder.row(InlineKeyboardButton(text="⚡ Fast + High→Low", callback_data=f"combi_apply:{order_id}:fast_highlow"))
     builder.row(InlineKeyboardButton(text="🚀 Ultra Fast + Auto Polls", callback_data=f"combi_apply:{order_id}:ultra_poll"))
     builder.row(InlineKeyboardButton(text="⬅️ Back", callback_data=f"back_to_order:{order_id}"))
-    
+
     text = "🔄 <b>Combi Speed Settings</b>\n\nSelect a combination preset:"
-    
+
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await callback.answer()
 
@@ -3594,9 +4282,9 @@ async def apply_combi_speed(callback: types.CallbackQuery):
     parts = callback.data.split(":")
     order_id = parts[1]
     preset = parts[2]
-    
+
     update_data = {"updated_at": datetime.utcnow()}
-    
+
     if preset == "normal_night":
         update_data.update({
             "speed_multiplier": 1.0,
@@ -3620,12 +4308,12 @@ async def apply_combi_speed(callback: types.CallbackQuery):
         msg = "✅ Applied: Ultra Fast + Auto Polls"
     else:
         msg = "✅ Settings applied"
-    
+
     await orders_collection.update_one(
         {"_id": ObjectId(order_id)},
         {"$set": update_data}
     )
-    
+
     await send_updated_order_message(callback, order_id, msg)
 
 
@@ -3823,6 +4511,20 @@ async def cancel_final_callback(callback: types.CallbackQuery):
 
     refund_inr = await usd_to_inr_converter(refund_amount)
 
+    # Remove channel from "My Channels" if no remaining active orders for this channel
+    user_id_for_channel = order.get("user_id")
+    channel_id_for_check = order.get("channel_id")
+    remaining_active = await orders_collection.count_documents({
+        "user_id": user_id_for_channel,
+        "channel_id": channel_id_for_check,
+        "status": {"$in": ["confirmed", "processing"]}
+    })
+    if remaining_active == 0:
+        await channels_collection.delete_one({
+            "user_id": user_id_for_channel,
+            "channel_id": channel_id_for_check
+        })
+
     try:
         await callback.message.edit_text(
             f"✅ <b>Subscription Cancelled!</b>\n\n"
@@ -3867,18 +4569,30 @@ def get_order_control_markup(order, is_paused: bool, high_low_str: str, night_st
     return builder.as_markup()
 
 
-async def show_channel_order_details(chat_id: int, user_id: int, channel_id: int, channel_title: str):
+async def show_channel_order_details(chat_id: int, user_id: int, channel_id: int, channel_title: str, service_type: str = ""):
+    # Filter by specific service when coming from Views or Reactions section
+    if service_type in ("views_by_followers", "reactions_by_followers"):
+        svc_filter = service_type
+    else:
+        svc_filter = {"$in": ["views_by_followers", "reactions_by_followers"]}
+
     orders = await orders_collection.find({
         "user_id": user_id,
         "channel_id": channel_id,
-        "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
+        "service_identifier": svc_filter,
         "status": {"$in": ["confirmed", "processing"]}
     }).sort("created_at", -1).to_list(None)
+
+    svc_label = (
+        "Views" if service_type == "views_by_followers"
+        else "Reactions" if service_type == "reactions_by_followers"
+        else "auto"
+    )
 
     if not orders:
         await bot.send_message(
             chat_id,
-            f"ℹ️ No auto orders found for channel: {channel_title}",
+            f"ℹ️ No active {svc_label} orders found for channel: {channel_title}",
             reply_markup=get_main_menu_keyboard()
         )
         return
@@ -4167,15 +4881,20 @@ async def enter_amount(message: types.Message, state: FSMContext):
 
     if "UPI" in method:
         inr_amount = await usd_to_inr_converter(amount)
+        # Load QR and UPI ID from DB; fall back to hardcoded if not set
+        upi_qr_setting = await settings_collection.find_one({"key": "upi_qr"})
+        upi_id_setting = await settings_collection.find_one({"key": "upi_id"})
+        qr_photo = (upi_qr_setting.get("file_id") if upi_qr_setting else None) or "https://i.ibb.co/Fb5hpJSn/image.jpg"
+        upi_id_val = (upi_id_setting.get("value") if upi_id_setting else None) or "paytm.s1lmr2p@pty"
         caption = (
             f"🇮🇳 <b>UPI Payment</b>\n\n"
             f"💰 <b>Amount:</b> <code>${amount:.2f}</code> (~{inr_amount})\n"
-            f"🏦 <b>UPI ID:</b> <code>paytm.s1lmr2p@pty</code>\n\n"
+            f"🏦 <b>UPI ID:</b> <code>{html_escape(upi_id_val)}</code>\n\n"
             f"📩 <i>Send the payment screenshot here after completing the transaction.</i>"
         )
         await bot.send_photo(
             chat_id=message.chat.id,
-            photo="https://i.ibb.co/Fb5hpJSn/image.jpg",
+            photo=qr_photo,
             caption=caption,
             parse_mode="HTML",
             reply_markup=ReplyKeyboardMarkup(
@@ -4380,42 +5099,42 @@ async def handle_vote_channel_selection(message: types.Message, state: FSMContex
     """Handle channel selection specifically for vote ordering (FIXED WORKFLOW)"""
     data = await state.get_data()
     service_type = data.get('service_type')
-    
+
     # Only handle if this is for votes
     if service_type != 'poll_votes':
         # For other services, let default handler take care
         await handle_channel_shared(message, state)
         return
-    
+
     chat_id = message.chat_shared.chat_id
     user_id = message.from_user.id
-    
+
     try:
         # Get channel info using first active client
-        client = active_clients[0] if active_clients else None
+        client = get_active_clients()[0] if get_active_clients() else None
         if not client:
             await message.answer("❌ No active Telegram clients available. Please contact admin.")
             return
-        
+
         try:
             entity = await client.get_entity(PeerChannel(chat_id))
             channel_title = entity.title
             is_public = hasattr(entity, 'username') and entity.username is not None
-            
+
             # Try to get full channel info
             try:
                 full_channel = await client(GetFullChannelRequest(channel=entity))
                 print(f"Vote channel selected: {channel_title}, Public: {is_public}")
             except:
                 pass
-            
+
             # Save channel info
             await state.update_data(
                 channel_id=chat_id,
                 channel_title=channel_title,
                 is_public_channel=is_public
             )
-            
+
             # If private channel, ask for invite link so workers can join
             if not is_public:
                 await message.answer(
@@ -4446,7 +5165,7 @@ async def handle_vote_channel_selection(message: types.Message, state: FSMContex
                     )
                 )
                 await state.set_state(OrderStates.waiting_for_content)
-                
+
         except Exception as e:
             print(f"Error getting channel info: {e}")
             await message.answer(
@@ -4454,7 +5173,7 @@ async def handle_vote_channel_selection(message: types.Message, state: FSMContex
                 "Please make sure the bot is added as admin in the channel."
             )
             return
-            
+
     except Exception as e:
         print(f"Error in vote channel selection: {e}")
         await message.answer("❌ An error occurred. Please try again.")
@@ -4491,7 +5210,7 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
     link = message.text.strip()
     data = await state.get_data()
     service_type = data.get('service_type')
-    
+
     # ===== VOTE-SPECIFIC HANDLING (NEW FIX) ===== #
     if service_type == 'poll_votes':
         # For votes, we need private invite links only
@@ -4504,10 +5223,10 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
                 parse_mode="HTML"
             )
             return
-        
+
         # Save invite link
         await state.update_data(invite_link=link)
-        
+
         # Proceed to poll forwarding first (DON'T JOIN YET)
         await message.answer(
             "✅ Invite link saved.\n\n"
@@ -4522,19 +5241,19 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
         )
         await state.set_state(OrderStates.waiting_for_content)
         return
-    
+
     # ===== EXISTING LOGIC FOR OTHER SERVICES ===== #
     # ✅ Accept multiple formats: @username, username, t.me/username, telegram.me/username
     # Normalize the input
     if link.startswith('@'):
         # Remove @ and validate
         link = link[1:]
-    
+
     # If it's just a username without any protocol, convert to t.me format
     if not any(x in link.lower() for x in ['t.me/', 'telegram.me/', 'telegram.dog/']):
         # Assume it's a username and convert to t.me format
         link = f"https://t.me/{link}"
-    
+
     # Now validate that it's a proper telegram link
     if not any(x in link.lower() for x in ['t.me/', 'telegram.me/', 'telegram.dog/']):
         await message.answer(
@@ -4550,7 +5269,7 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
     shared_chat_id = data.get('channel_id')
 
     # ✅ Fixed: Properly check if active_clients list is empty
-    if not active_clients:
+    if not get_active_clients():
         await message.answer(
             "❌ No active Telegram clients available.\n\n"
             "Please contact the admin to add Telegram accounts for the bot to work.",
@@ -4558,8 +5277,8 @@ async def handle_invite_link(message: types.Message, state: FSMContext):
         )
         await state.clear()
         return
-    
-    client = active_clients[0]
+
+    client = get_active_clients()[0]
 
     try:
         validated = await validate_invite_link_only(client, link)
@@ -4931,7 +5650,7 @@ async def handle_payment_confirm(callback: types.CallbackQuery, state: FSMContex
         )
 
         invite_link = getattr(config, 'invite_link', None)
-        if invite_link and active_clients:
+        if invite_link and get_active_clients():
             asyncio.create_task(join_all_clients_to_channel(config.channel_id, invite_link))
 
         await callback.message.answer("Main Menu", reply_markup=get_main_menu_keyboard())
@@ -4957,34 +5676,49 @@ async def handle_payment_cancel(callback: types.CallbackQuery, state: FSMContext
 
 ACCOUNTS_PER_PAGE = 10  # You can adjust this
 
+
+def get_live_identifiers():
+    """
+    Return two sets: live phone numbers and live session names,
+    built from the currently connected clients in memory.
+    """
+    live_phones = set()
+    live_names = set()
+    for c in get_active_clients():
+        p = getattr(c, "_session_phone", None) or getattr(c, "_tg_phone", None)
+        n = getattr(c, "_session_name", None) or getattr(c, "_tg_session_name", None)
+        if p:
+            live_phones.add(str(p).strip())
+        if n:
+            live_names.add(str(n).strip())
+    return live_phones, live_names
+
+
+def is_session_live(session: dict, live_phones: set, live_names: set) -> bool:
+    """Return True only if this DB session has a real connected client in memory."""
+    phone = str(session.get("phone", "")).strip()
+    name = str(session.get("session_name", "")).strip()
+    return phone in live_phones or name in live_names
+
+
+def filter_live_sessions(sessions: list) -> list:
+    """Keep only sessions that have a currently connected client."""
+    live_phones, live_names = get_live_identifiers()
+    return [s for s in sessions if is_session_live(s, live_phones, live_names)]
+
+
 def render_account_page(sessions, page: int, total_pages: int):
     start = page * ACCOUNTS_PER_PAGE
     end = start + ACCOUNTS_PER_PAGE
     text = f"📱 <b>Telegram Account Management</b>\n\n"
-    text += f"🔹 <b>Logged-in Accounts (Page {page+1}/{total_pages})</b>:\n\n"
+    text += f"🟢 <b>Live Accounts (Page {page+1}/{total_pages})</b>:\n\n"
+
+    if not sessions:
+        text += "⚠️ No live accounts connected right now.\n\n"
+        text += "Add accounts via 📦 Bulk Import or 📝 Generate Session.\n"
+        return text
 
     for i, session in enumerate(sessions[start:end], start + 1):
-        # Get status with emoji indicator
-        status = session.get('status', 'unknown')
-        if status == 'active':
-            status_emoji = "✅"
-            status_text = "Active"
-        elif status == 'unauthorized':
-            status_emoji = "⚠️"
-            status_text = "Expired - Needs Re-login"
-        elif status == 'connection_error':
-            status_emoji = "🔌"
-            status_text = "Connection Error"
-        elif status == 'error':
-            status_emoji = "❌"
-            status_text = "Error"
-        elif status == 'load_error':
-            status_emoji = "⚠️"
-            status_text = "Load Error"
-        else:
-            status_emoji = "❓"
-            status_text = "Unknown"
-        
         # Format last check time
         last_check = session.get('last_check')
         if last_check:
@@ -4997,25 +5731,24 @@ def render_account_page(sessions, page: int, total_pages: int):
                 last_check_str = f"{time_diff.seconds // 60}m ago"
         else:
             last_check_str = "Never"
-        
+
         text += (
-            f"{i}. {session['phone']} - @{session.get('username', 'N/A')}\n"
-            f"   {status_emoji} <i>{status_text}</i> (Checked: {last_check_str})\n"
+            f"{i}. {get_session_display_label(session)} - {get_session_username_text(session)}\n"
+            f"   🟢 <i>Live &amp; Active</i> (Checked: {last_check_str})\n"
         )
-        
-        # Show error if present
-        last_error = session.get('last_error')
-        if last_error and status != 'active':
-            error_preview = last_error[:50] + "..." if len(last_error) > 50 else last_error
-            text += f"   💬 <code>{error_preview}</code>\n"
         text += "\n"
 
-    text += "\n💡 <b>Status Guide:</b>\n"
-    text += "✅ Active - Working normally\n"
-    text += "⚠️ Expired - Session needs re-authentication\n"
-    text += "🔌 Connection Error - Network/API issue (may auto-recover)\n"
-    text += "❌ Error - Needs attention\n\n"
-    text += "<i>Sessions are NEVER auto-deleted. You have full control.</i>"
+    text += (
+        "\n<blockquote expandable>"
+        "💡 <b>Status Guide:</b>\n"
+        "✅ Active - Working normally\n"
+        "⚠️ Expired - Session needs re-authentication\n"
+        "🔌 Connection Error - Network/API issue (may auto-recover)\n"
+        "❌ Error - Needs attention\n"
+        "ℹ️ No username does NOT mean expired; active session stays active\n\n"
+        "<i>Sessions are NEVER auto-deleted. You have full control.</i>"
+        "</blockquote>"
+    )
 
     return text
 
@@ -5025,7 +5758,7 @@ async def telegram_accounts_menu(message: types.Message):
     if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID] and (not user or not user.get('is_admin', False)):
         await message.answer("⛔️ This command is only available to admins.")
         return
-    
+
     # Check permission for non-major admins
     if message.from_user.id != MAJOR_ADMIN_ID and message.from_user.id != ADMIN_ID:
         user_permissions = user.get('admin_permissions', {})
@@ -5033,7 +5766,7 @@ async def telegram_accounts_menu(message: types.Message):
             await message.answer("⛔️ You don't have permission to manage Telegram accounts.")
             return
 
-    sessions = await get_all_sessions()
+    sessions = filter_live_sessions(await get_all_sessions())
     total_pages = max(1, (len(sessions) + ACCOUNTS_PER_PAGE - 1) // ACCOUNTS_PER_PAGE)
     page = 0
 
@@ -5057,22 +5790,24 @@ async def telegram_accounts_menu(message: types.Message):
         InlineKeyboardButton(text="📦 Bulk Import (ZIP)", callback_data="bulk_import_zip")
     ]
     buttons_row4 = [
-        InlineKeyboardButton(text="🗑️ Remove Account", callback_data="remove_account"),
-        InlineKeyboardButton(text="🔁 Refresh", callback_data="refresh_accounts")
+        InlineKeyboardButton(text="🗑️ Remove Account", callback_data="remove_account")
+    ]
+    buttons_row5 = [
+        InlineKeyboardButton(text="🔑 Manage API Credentials", callback_data="manage_apis")
     ]
 
     # Build keyboard layout
     keyboard_layout = []
     if nav_buttons:  # Add navigation buttons if present
         keyboard_layout.append(nav_buttons)
-    keyboard_layout.extend([buttons_row1, buttons_row2, buttons_row3, buttons_row4])
+    keyboard_layout.extend([buttons_row1, buttons_row2, buttons_row3, buttons_row4, buttons_row5])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_layout)
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("acc_page:"))
 async def handle_account_pagination(callback: types.CallbackQuery):
     page = int(callback.data.split(":")[1])
-    sessions = await get_all_sessions()
+    sessions = filter_live_sessions(await get_all_sessions())
     total_pages = max(1, (len(sessions) + ACCOUNTS_PER_PAGE - 1) // ACCOUNTS_PER_PAGE)
 
     # Clamp page index
@@ -5097,15 +5832,16 @@ async def handle_account_pagination(callback: types.CallbackQuery):
         InlineKeyboardButton(text="📦 Bulk Import (ZIP)", callback_data="bulk_import_zip")
     ]
     action_buttons_row4 = [
-        InlineKeyboardButton(text="🗑️ Remove Account", callback_data="remove_account"),
-        InlineKeyboardButton(text="🔁 Refresh", callback_data="refresh_accounts")
+        InlineKeyboardButton(text="🗑️ Remove Account", callback_data="remove_account")
     ]
-
+    action_buttons_row5 = [
+        InlineKeyboardButton(text="🔑 Manage API Credentials", callback_data="manage_apis")
+    ]
 
     keyboard_layout = []
     if nav_buttons:
         keyboard_layout.append(nav_buttons)
-    keyboard_layout.extend([action_buttons_row1, action_buttons_row2, action_buttons_row3, action_buttons_row4])
+    keyboard_layout.extend([action_buttons_row1, action_buttons_row2, action_buttons_row3, action_buttons_row4, action_buttons_row5])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_layout)
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -5117,7 +5853,7 @@ async def start_generate_session_quick(callback: types.CallbackQuery, state: FSM
     """Quick session generation using default API credentials"""
     # Use default API credentials
     await state.update_data(api_id=str(API_ID), api_hash=API_HASH)
-    
+
     await callback.message.answer(
         "🔑 <b>Generate Session (Quick)</b>\n\n"
         f"✅ Using Default API Credentials:\n"
@@ -5353,11 +6089,14 @@ async def process_login_code(message: types.Message, state: FSMContext):
 
         # If we get here, login was successful
         session_string = client.session.save()
-        await store_session(phone, session_string, user, api_id=api_id, api_hash=api_hash)
-        await client.disconnect()
-
-        # Reload clients
-        await load_all_clients()
+        stored_phone = await store_session(
+            phone,
+            session_string,
+            user,
+            api_id=api_id,
+            api_hash=api_hash
+        )
+        await register_client_as_active(client, user_data=user, phone=stored_phone)
 
         await message.answer(f"✅ Account {phone} logged in successfully with custom API credentials!")
         await state.clear()
@@ -5403,11 +6142,14 @@ async def process_login_password(message: types.Message, state: FSMContext):
             return
 
         session_string = client.session.save()
-        await store_session(phone, session_string, user, api_id=api_id, api_hash=api_hash)
-        await client.disconnect()
-
-        # Reload clients
-        await load_all_clients()
+        stored_phone = await store_session(
+            phone,
+            session_string,
+            user,
+            api_id=api_id,
+            api_hash=api_hash
+        )
+        await register_client_as_active(client, user_data=user, phone=stored_phone)
 
         await message.answer(f"✅ Account {phone} logged in successfully with 2FA and custom API credentials!")
         await state.clear()
@@ -5606,13 +6348,16 @@ async def process_generate_session_code(message: types.Message, state: FSMContex
 
         # Success! Generate and display string session
         final_session_string = client.session.save()
-        
-        # Store in database
-        await store_session(phone, final_session_string, user, api_id=api_id, api_hash=api_hash)
-        await client.disconnect()
 
-        # Reload clients
-        await load_all_clients()
+        # Store in database
+        stored_phone = await store_session(
+            phone,
+            final_session_string,
+            user,
+            api_id=api_id,
+            api_hash=api_hash
+        )
+        await register_client_as_active(client, user_data=user, phone=stored_phone)
 
         # Display the string session to user
         await message.answer(
@@ -5674,13 +6419,16 @@ async def process_generate_session_password(message: types.Message, state: FSMCo
 
         # Success! Generate and display string session
         final_session_string = client.session.save()
-        
-        # Store in database
-        await store_session(phone, final_session_string, user, api_id=api_id, api_hash=api_hash)
-        await client.disconnect()
 
-        # Reload clients
-        await load_all_clients()
+        # Store in database
+        stored_phone = await store_session(
+            phone,
+            final_session_string,
+            user,
+            api_id=api_id,
+            api_hash=api_hash
+        )
+        await register_client_as_active(client, user_data=user, phone=stored_phone)
 
         # Display the string session to user
         await message.answer(
@@ -5795,9 +6543,9 @@ async def process_login_string_session_api_hash(message: types.Message, state: F
     try:
         # Create client with the string session
         client = await create_telegram_client(session_string=session_string, api_id=api_id, api_hash=api_hash)
-        
+
         await message.answer("🔄 Connecting and validating session...")
-        
+
         await client.connect()
 
         # Check if authorized
@@ -5818,8 +6566,8 @@ async def process_login_string_session_api_hash(message: types.Message, state: F
         # Get user info
         try:
             user = await client.get_me()
-            phone = user.phone or "Unknown"
-            
+            phone = normalize_session_phone(user.phone, user_id=user.id)
+
             # Check for duplicate
             existing = await sessions_collection.find_one({"phone": phone})
             if existing:
@@ -5833,11 +6581,14 @@ async def process_login_string_session_api_hash(message: types.Message, state: F
                 return
 
             # Store session
-            await store_session(phone, session_string, user, api_id=api_id, api_hash=api_hash)
-            await client.disconnect()
-
-            # Reload clients
-            await load_all_clients()
+            stored_phone = await store_session(
+                phone,
+                session_string,
+                user,
+                api_id=api_id,
+                api_hash=api_hash
+            )
+            await register_client_as_active(client, user_data=user, phone=stored_phone)
 
             await message.answer(
                 f"✅ <b>Successfully logged in with string session!</b>\n\n"
@@ -5870,54 +6621,24 @@ async def process_login_string_session_api_hash(message: types.Message, state: F
 
 @dp.callback_query(F.data == "refresh_accounts")
 async def check_logged_in_accounts(callback: types.CallbackQuery):
-    sessions = await get_all_sessions()
+    sessions = filter_live_sessions(await get_all_sessions())
     if not sessions:
-        await callback.answer("No accounts found in DB.")
+        await callback.answer("No live accounts connected right now.", show_alert=True)
         return
 
-    # FIX: Clear status flags before reloading to properly reinitialize
-    await sessions_collection.update_many(
-        {},
-        {
-            "$unset": {
-                "status": "",
-                "last_error": ""
-            },
-            "$set": {
-                "last_check": datetime.utcnow()
-            }
-        }
-    )
-    
-    # Disconnect existing clients properly
-    global active_clients
-    for client in active_clients:
-        try:
-            if client.is_connected():
-                await client.disconnect()
-        except Exception:
-            pass
-    active_clients = []
-    
-    # Reload all clients from database with clean state
-    await load_all_clients()
-    
-    # Re-fetch sessions to get updated status
-    sessions = await get_all_sessions()
-
-    # After reload, refresh the current page view
+    # Refresh only the UI view. Do NOT reconnect/reload sessions repeatedly.
     total_pages = max(1, (len(sessions) + ACCOUNTS_PER_PAGE - 1) // ACCOUNTS_PER_PAGE)
-    page = 0  # Go back to first page after refresh
-    
+    page = 0
+
     text = render_account_page(sessions, page, total_pages)
-    
+
     # Navigation buttons
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton(text="⬅️ Previous", callback_data=f"acc_page:{page - 1}"))
     if page < total_pages - 1:
         nav_buttons.append(InlineKeyboardButton(text="➡️ Next", callback_data=f"acc_page:{page + 1}"))
-    
+
     action_buttons_row1 = [
         InlineKeyboardButton(text="👤 Login New Account (Legacy)", callback_data="login_account")
     ]
@@ -5929,18 +6650,20 @@ async def check_logged_in_accounts(callback: types.CallbackQuery):
         InlineKeyboardButton(text="📦 Bulk Import (ZIP)", callback_data="bulk_import_zip")
     ]
     action_buttons_row4 = [
-        InlineKeyboardButton(text="🗑️ Remove Account", callback_data="remove_account"),
-        InlineKeyboardButton(text="🔁 Refresh", callback_data="refresh_accounts")
+        InlineKeyboardButton(text="🗑️ Remove Account", callback_data="remove_account")
     ]
-    
+    action_buttons_row5 = [
+        InlineKeyboardButton(text="🔑 Manage API Credentials", callback_data="manage_apis")
+    ]
+
     keyboard_layout = []
     if nav_buttons:
         keyboard_layout.append(nav_buttons)
-    keyboard_layout.extend([action_buttons_row1, action_buttons_row2, action_buttons_row3, action_buttons_row4])
+    keyboard_layout.extend([action_buttons_row1, action_buttons_row2, action_buttons_row3, action_buttons_row4, action_buttons_row5])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_layout)
-    
+
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-    await callback.answer(f"✅ Reloaded {len(active_clients)} accounts!", show_alert=True)
+    await callback.answer("ℹ️ Session reload disabled. Using initially loaded active clients.", show_alert=True)
 
 
 
@@ -5949,7 +6672,7 @@ async def check_logged_in_accounts(callback: types.CallbackQuery):
 async def start_bulk_import(callback: types.CallbackQuery, state: FSMContext):
     """Start bulk import process"""
     await state.set_state(TelegramAccountStates.BULK_IMPORT_ZIP)
-    
+
     await callback.message.answer(
         "📦 <b>Bulk Session Import</b>\n\n"
         "📁 Please send me a ZIP file containing your Telegram session files (.session files).\n\n"
@@ -5971,7 +6694,7 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
     import tempfile
     import shutil
     import glob
-    
+
     # Check if it's a ZIP file
     if not message.document.file_name.lower().endswith('.zip'):
         await message.answer(
@@ -5980,7 +6703,7 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             parse_mode="HTML"
         )
         return
-    
+
     # Check file size (max 50MB)
     max_size = 50 * 1024 * 1024  # 50MB in bytes
     if message.document.file_size > max_size:
@@ -5991,35 +6714,35 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             parse_mode="HTML"
         )
         return
-    
+
     # Send initial processing message
     processing_msg = await message.answer(
         "⏳ <b>Processing ZIP file...</b>\n\n"
         "📥 Downloading and extracting sessions...",
         parse_mode="HTML"
     )
-    
+
     try:
         # Create temp directory
         temp_dir = tempfile.mkdtemp(prefix="telegram_sessions_")
-        
+
         # Download the ZIP file
         file = await bot.get_file(message.document.file_id)
         zip_path = f"{temp_dir}/sessions.zip"
         await bot.download_file(file.file_path, zip_path)
-        
+
         # Extract ZIP
         extract_dir = f"{temp_dir}/extracted"
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(extract_dir)
-        
+
         # Find all .session files
         session_files = []
         for root, dirs, files in os.walk(extract_dir):
             for file in files:
                 if file.endswith('.session'):
                     session_files.append(os.path.join(root, file))
-        
+
         if not session_files:
             await processing_msg.edit_text(
                 "❌ <b>No Session Files Found</b>\n\n"
@@ -6030,7 +6753,7 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             shutil.rmtree(temp_dir)
             await state.clear()
             return
-        
+
         # Check session count
         if len(session_files) > 1000:
             await processing_msg.edit_text(
@@ -6043,131 +6766,195 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             shutil.rmtree(temp_dir)
             await state.clear()
             return
-        
+
+        # Fetch stored API credentials for distribution
+        all_apis = await get_all_api_credentials()
+        total_session_count = len(session_files)
+        api_info_text = (
+            f"🔑 Using {len(all_apis)} API credential(s) for distribution"
+            if all_apis
+            else "🔑 Using default API credentials (no custom APIs stored)"
+        )
+
         # Update message with count
         await processing_msg.edit_text(
             f"✅ <b>Found {len(session_files)} Session Files</b>\n\n"
             f"🚀 Starting bulk import...\n"
-            f"⏱️ Estimated time: {len(session_files) * 23 // 60} minutes\n\n"
+            f"⏱️ Estimated time: {len(session_files) * 23 // 60} minutes\n"
+            f"{api_info_text}\n\n"
             f"📊 Progress: 0/{len(session_files)}",
             parse_mode="HTML"
         )
-        
+
         # Process each session with delay
         success_count = 0
         failed_count = 0
         failed_sessions = []
-        
+
         for idx, session_file in enumerate(session_files, 1):
             session_name = os.path.basename(session_file).replace('.session', '')
-            
-            try:
-                # Ensure sessions directory exists
-                sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
-                os.makedirs(sessions_dir, exist_ok=True)
-                
-                # Copy session file to sessions directory
-                session_name_clean = os.path.basename(session_file).replace('.session', '')
-                dest_path = os.path.join(sessions_dir, f"{session_name_clean}.session")
-                shutil.copy2(session_file, dest_path)
-                
-                # Create client from file
-                # Use the clean path without extension for Telethon
-                client = await create_telegram_client_from_file(
-                    os.path.join(sessions_dir, session_name_clean),
-                    api_id=API_ID,
-                    api_hash=API_HASH
-                )
-                
-                # Try to connect
-                await client.connect()
-                
-                # Check authorization
-                if not await client.is_user_authorized():
+            sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+            os.makedirs(sessions_dir, exist_ok=True)
+
+            session_name_clean = session_name
+            dest_path = os.path.join(sessions_dir, f"{session_name_clean}.session")
+            client = None
+            imported_ok = False
+
+            # Determine which API credentials to use for this session (0-based index)
+            if all_apis:
+                api_cred = get_api_for_session_index(idx - 1, all_apis, total_session_count)
+                use_api_id = api_cred["api_id"]
+                use_api_hash = api_cred["api_hash"]
+            else:
+                use_api_id = API_ID
+                use_api_hash = API_HASH
+
+            # Always replace stale file before validating
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+            shutil.copy2(session_file, dest_path)
+
+            for attempt in range(2):
+                try:
+                    client = await create_telegram_client_from_file(
+                        os.path.join(sessions_dir, session_name_clean),
+                        api_id=use_api_id,
+                        api_hash=use_api_hash
+                    )
+                    await client.connect()
+
+                    if not await client.is_user_authorized():
+                        raise PermissionError("Session unauthorized (explicit auth check failed)")
+
+                    me = await client.get_me()
+                    normalized_phone = normalize_session_phone(me.phone, session_name=session_name_clean, user_id=me.id)
+
+                    # If same number already exists with old session, replace old file and keep latest session.
+                    existing_doc = await sessions_collection.find_one({"phone": normalized_phone})
+                    if existing_doc and existing_doc.get("session_name") and existing_doc.get("session_name") != session_name_clean:
+                        remove_session_file_by_name(existing_doc.get("session_name"))
+
+                    stored_phone = await store_session(
+                        phone=normalized_phone,
+                        session_string=client.session.save(),
+                        user_data=me,
+                        api_id=use_api_id,
+                        api_hash=use_api_hash,
+                        session_name=session_name_clean,
+                        status="active"
+                    )
+
+                    await register_client_as_active(
+                        client,
+                        user_data=me,
+                        phone=stored_phone,
+                        session_name=session_name_clean
+                    )
+
+                    name = me.first_name or "No name"
+                    username = f"@{me.username}" if me.username else "No username"
+
+                    success_count += 1
+                    imported_ok = True
+
+                    await message.answer(
+                        f"✅ <b>Session {idx}/{len(session_files)} Success</b>\n\n"
+                        f"🆔 Session ID: <code>{session_name_clean}</code>\n"
+                        f"👤 Name: {name}\n"
+                        f"📱 Username: {username}\n"
+                        f"☎️ Account: {stored_phone}\n"
+                        f"🔑 API ID: <code>{use_api_id}</code>\n"
+                        f"🟢 Status: Active\n\n"
+                        f"✅ Session validated and added.",
+                        parse_mode="HTML"
+                    )
+                    break
+
+                except PermissionError as auth_error:
                     failed_count += 1
+                    auth_msg = str(auth_error)
                     failed_sessions.append({
                         'name': session_name,
-                        'error': 'Session not authorized (expired/invalid)'
+                        'error': auth_msg
                     })
-                    
-                    # Send failure notification
+
+                    placeholder_phone = normalize_session_phone(None, session_name=session_name_clean)
+                    await sessions_collection.update_one(
+                        {"phone": placeholder_phone},
+                        {
+                            "$set": {
+                                "session_name": session_name_clean,
+                                "session_label": build_session_label(session_name=session_name_clean),
+                                "status": "unauthorized",
+                                "last_error": auth_msg,
+                                "last_check": datetime.utcnow(),
+                                "updated_at": datetime.utcnow()
+                            },
+                            "$setOnInsert": {"created_at": datetime.utcnow()}
+                        },
+                        upsert=True
+                    )
+
+                    if client:
+                        try:
+                            if client.is_connected():
+                                await client.disconnect()
+                        except Exception:
+                            pass
+
+                    remove_session_file_by_name(session_name_clean)
+
                     await message.answer(
                         f"❌ <b>Session {idx}/{len(session_files)} Failed</b>\n\n"
                         f"📝 Name: <code>{session_name}</code>\n"
-                        f"❗ Error: Session not authorized (expired/invalid)\n\n"
-                        f"This session may have expired or been revoked.",
+                        f"❗ Error: {auth_msg}\n\n"
+                        f"This session is not authorized.",
                         parse_mode="HTML"
                     )
-                    
-                    await client.disconnect()
-                    os.remove(dest_path)  # Remove invalid session
-                    
-                    # Wait before next session
-                    await asyncio.sleep(random.uniform(20, 25))
-                    continue
-                
-                # Get user info
-                me = await client.get_me()
-                name = me.first_name or "Unknown"
-                username = f"@{me.username}" if me.username else "No username"
-                phone = me.phone or "No phone"
-                
-                # Save session string to database
-                session_string = client.session.save()
-                await store_session(
-                    phone=phone,
-                    session_string=session_string,
-                    user_data=me,
-                    api_id=API_ID,
-                    api_hash=API_HASH
-                )
-                
-                # Add to active clients
-                active_clients.append(client)
-                success_count += 1
-                
-                # Send success notification
-                await message.answer(
-                    f"✅ <b>Session {idx}/{len(session_files)} Success</b>\n\n"
-                    f"👤 Name: {name}\n"
-                    f"📱 Username: {username}\n"
-                    f"☎️ Phone: {phone}\n"
-                    f"🆔 User ID: <code>{me.id}</code>\n\n"
-                    f"✅ Logged in successfully!",
-                    parse_mode="HTML"
-                )
-                
-            except ApiIdInvalidError:
-                failed_count += 1
-                failed_sessions.append({
-                    'name': session_name,
-                    'error': 'Invalid API credentials'
-                })
-                
-                await message.answer(
-                    f"❌ <b>Session {idx}/{len(session_files)} Failed</b>\n\n"
-                    f"📝 Name: <code>{session_name}</code>\n"
-                    f"❗ Error: Invalid API ID/Hash\n\n"
-                    f"The session was created with different API credentials.",
-                    parse_mode="HTML"
-                )
-                
-            except Exception as e:
-                failed_count += 1
-                error_msg = str(e)[:100]
-                failed_sessions.append({
-                    'name': session_name,
-                    'error': error_msg
-                })
-                
-                await message.answer(
-                    f"❌ <b>Session {idx}/{len(session_files)} Failed</b>\n\n"
-                    f"📝 Name: <code>{session_name}</code>\n"
-                    f"❗ Error: {error_msg}\n\n"
-                    f"Check the session file and try again.",
-                    parse_mode="HTML"
-                )
-            
+                    break
+
+                except Exception as e:
+                    err_text = str(e)
+                    if client:
+                        try:
+                            if client.is_connected():
+                                await client.disconnect()
+                        except Exception:
+                            pass
+
+                    should_retry = attempt == 0 and should_cleanup_and_retry(err_text)
+                    if should_retry:
+                        # Cleanup and retry once for duplicate/IP/same-number conflicts
+                        remove_session_file_by_name(session_name_clean)
+                        if os.path.exists(dest_path):
+                            os.remove(dest_path)
+                        shutil.copy2(session_file, dest_path)
+                        await sessions_collection.delete_many({"session_name": session_name_clean, "status": {"$ne": "active"}})
+                        await asyncio.sleep(1.5)
+                        continue
+
+                    failed_count += 1
+                    error_msg = err_text[:120]
+                    failed_sessions.append({
+                        'name': session_name,
+                        'error': error_msg
+                    })
+
+                    await message.answer(
+                        f"❌ <b>Session {idx}/{len(session_files)} Failed</b>\n\n"
+                        f"📝 Name: <code>{session_name}</code>\n"
+                        f"❗ Error: {error_msg}\n\n"
+                        f"Check the session file and try again.",
+                        parse_mode="HTML"
+                    )
+                    break
+
+            if not imported_ok and os.path.exists(dest_path):
+                # Keep only validated active sessions in sessions directory
+                if not await sessions_collection.find_one({"session_name": session_name_clean, "status": "active"}):
+                    os.remove(dest_path)
+
             # Update progress
             if idx % 5 == 0 or idx == len(session_files):
                 await processing_msg.edit_text(
@@ -6178,11 +6965,21 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
                     f"⏱️ Processing...",
                     parse_mode="HTML"
                 )
-            
+
             # Wait before next session (20-25 seconds)
             if idx < len(session_files):
                 await asyncio.sleep(random.uniform(20, 25))
-        
+
+        # Run rebalance to ensure even distribution is persisted to DB
+        if all_apis and success_count > 0:
+            total_s, total_a, dist_text = await rebalance_sessions_across_apis()
+            rebalance_summary = (
+                f"\n\n🔑 <b>API Distribution ({total_a} APIs, {total_s} sessions):</b>\n"
+                f"{dist_text}"
+            )
+        else:
+            rebalance_summary = ""
+
         # Final summary
         summary_text = (
             f"🎉 <b>Bulk Import Complete!</b>\n\n"
@@ -6190,21 +6987,23 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             f"• Total Sessions: {len(session_files)}\n"
             f"• ✅ Successfully Imported: {success_count}\n"
             f"• ❌ Failed: {failed_count}\n"
-            f"• 🔥 Active Clients: {len(active_clients)}\n\n"
+            f"• 🔥 Active Clients: {len(get_active_clients())}\n"
+            f"• 🔑 API Credentials Used: {len(all_apis) if all_apis else 'Default'}\n"
         )
-        
+
         if failed_sessions:
-            summary_text += f"⚠️ <b>Failed Sessions:</b>\n"
+            summary_text += f"\n⚠️ <b>Failed Sessions:</b>\n"
             for fs in failed_sessions[:10]:  # Show first 10
                 summary_text += f"• {fs['name']}: {fs['error'][:50]}\n"
-            
+
             if len(failed_sessions) > 10:
                 summary_text += f"\n... and {len(failed_sessions) - 10} more\n"
-        
+
         summary_text += f"\n✅ All successful sessions are now active and monitoring channels!"
-        
+        summary_text += rebalance_summary
+
         await message.answer(summary_text, parse_mode="HTML")
-        
+
         # Send notification to admin
         await bot.send_message(
             ADMIN_ID,
@@ -6217,11 +7016,11 @@ async def handle_bulk_import_zip(message: types.Message, state: FSMContext):
             f"• Failed: {failed_count}",
             parse_mode="HTML"
         )
-        
+
         # Cleanup
         shutil.rmtree(temp_dir)
         await processing_msg.delete()
-        
+
     except zipfile.BadZipFile:
         await processing_msg.edit_text(
             "❌ <b>Invalid ZIP File</b>\n\n"
@@ -6254,6 +7053,265 @@ async def bulk_import_invalid_input(message: types.Message):
 
 
 
+# ===== API CREDENTIALS MANAGEMENT HANDLERS ===== #
+
+async def send_manage_apis_menu(target, edit=False):
+    """Send (or edit) the API credentials management menu."""
+    all_apis = await get_all_api_credentials()
+    total = len(all_apis)
+
+    if total == 0:
+        text = (
+            "🔑 <b>API Credentials Manager</b>\n\n"
+            "No custom API credentials stored yet.\n\n"
+            "Add your Telegram API ID and HASH pairs below.\n"
+            "Sessions will be automatically distributed evenly across all stored APIs.\n\n"
+            "<i>Default API is used when no custom credentials are stored.</i>"
+        )
+    else:
+        lines = []
+        for i, cred in enumerate(all_apis, 1):
+            lines.append(
+                f"{i}. <code>{cred['api_id']}</code> — {cred.get('session_count', 0)} sessions assigned"
+            )
+        text = (
+            f"🔑 <b>API Credentials Manager</b>\n\n"
+            f"<b>Stored APIs ({total}):</b>\n" +
+            "\n".join(lines) +
+            "\n\n<i>Sessions are distributed evenly across all APIs during ZIP import.</i>"
+        )
+
+    # Build keyboard: one row per API with delete button, then action rows
+    inline_rows = []
+    for cred in all_apis:
+        cred_id = str(cred["_id"])
+        inline_rows.append([
+            InlineKeyboardButton(
+                text=f"🗑️ Delete API {cred['api_id']}",
+                callback_data=f"del_api:{cred_id}"
+            )
+        ])
+
+    inline_rows.append([
+        InlineKeyboardButton(text="➕ Add New API", callback_data="add_api")
+    ])
+    if all_apis:
+        inline_rows.append([
+            InlineKeyboardButton(text="⚖️ Rebalance Sessions", callback_data="rebalance_apis")
+        ])
+    inline_rows.append([
+        InlineKeyboardButton(text="🔙 Back to Accounts", callback_data="manage_accounts")
+    ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=inline_rows)
+    if edit:
+        await target.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "manage_apis")
+async def manage_apis_handler(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID]:
+        await callback.answer("⛔ Admin only.", show_alert=True)
+        return
+    await state.clear()
+    await send_manage_apis_menu(callback.message, edit=True)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "add_api")
+async def add_api_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID]:
+        await callback.answer("⛔ Admin only.", show_alert=True)
+        return
+    await state.set_state(TelegramAccountStates.ADD_API_ID)
+    await callback.message.edit_text(
+        "🔑 <b>Add New API Credentials</b>\n\n"
+        "<b>Step 1/2 — Enter API ID:</b>\n\n"
+        "Send your Telegram API ID (numbers only).\n"
+        "Get it from <a href='https://my.telegram.org'>my.telegram.org</a>\n\n"
+        "Send /cancel to abort.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Cancel", callback_data="manage_apis")
+        ]])
+    )
+    await callback.answer()
+
+
+@dp.message(TelegramAccountStates.ADD_API_ID)
+async def add_api_id_received(message: types.Message, state: FSMContext):
+    if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID]:
+        return
+    raw = (message.text or "").strip()
+    if raw == "/cancel":
+        await state.clear()
+        await send_manage_apis_menu(message)
+        return
+    if not raw.isdigit():
+        await message.answer(
+            "❌ <b>Invalid API ID</b>\n\n"
+            "The API ID must contain numbers only. Please try again.\n"
+            "Send /cancel to abort.",
+            parse_mode="HTML"
+        )
+        return
+    await state.update_data(new_api_id=int(raw))
+    await state.set_state(TelegramAccountStates.ADD_API_HASH)
+    await message.answer(
+        "🔑 <b>Add New API Credentials</b>\n\n"
+        "<b>Step 2/2 — Enter API HASH:</b>\n\n"
+        "Send your Telegram API HASH (32-character hex string).\n\n"
+        "Send /cancel to abort.",
+        parse_mode="HTML"
+    )
+
+
+@dp.message(TelegramAccountStates.ADD_API_HASH)
+async def add_api_hash_received(message: types.Message, state: FSMContext):
+    if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID]:
+        return
+    raw = (message.text or "").strip()
+    if raw == "/cancel":
+        await state.clear()
+        await send_manage_apis_menu(message)
+        return
+
+    # Basic validation: 32-char hex string
+    import re as _re
+    if not _re.fullmatch(r"[0-9a-fA-F]{32}", raw):
+        await message.answer(
+            "❌ <b>Invalid API HASH</b>\n\n"
+            "The API HASH must be a 32-character hexadecimal string.\n"
+            "Please try again or send /cancel to abort.",
+            parse_mode="HTML"
+        )
+        return
+
+    data = await state.get_data()
+    new_api_id = data.get("new_api_id")
+    new_api_hash = raw.lower()
+
+    # Check for duplicates
+    existing = await api_credentials_collection.find_one({"api_id": new_api_id})
+    if existing:
+        await state.clear()
+        await message.answer(
+            f"⚠️ <b>Duplicate API ID</b>\n\n"
+            f"API ID <code>{new_api_id}</code> already exists.\n"
+            f"Delete it first if you want to replace it.",
+            parse_mode="HTML"
+        )
+        await send_manage_apis_menu(message)
+        return
+
+    cred_id = await add_api_credential(new_api_id, new_api_hash)
+    await state.clear()
+
+    await message.answer(
+        f"✅ <b>API Credential Added!</b>\n\n"
+        f"🆔 API ID: <code>{new_api_id}</code>\n"
+        f"🔑 API HASH: <code>{new_api_hash}</code>\n\n"
+        f"This API will be used to distribute sessions on next ZIP import.",
+        parse_mode="HTML"
+    )
+    await send_manage_apis_menu(message)
+
+
+@dp.callback_query(F.data.startswith("del_api:"))
+async def delete_api_handler(callback: types.CallbackQuery):
+    if callback.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID]:
+        await callback.answer("⛔ Admin only.", show_alert=True)
+        return
+
+    cred_id = callback.data.split(":", 1)[1]
+    cred = await api_credentials_collection.find_one({"_id": ObjectId(cred_id)})
+    if not cred:
+        await callback.answer("⚠️ API credential not found.", show_alert=True)
+        await send_manage_apis_menu(callback.message, edit=True)
+        return
+
+    await delete_api_credential(cred_id)
+    await callback.answer(f"✅ Deleted API ID {cred['api_id']}", show_alert=True)
+    await send_manage_apis_menu(callback.message, edit=True)
+
+
+@dp.callback_query(F.data == "rebalance_apis")
+async def rebalance_apis_handler(callback: types.CallbackQuery):
+    if callback.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID]:
+        await callback.answer("⛔ Admin only.", show_alert=True)
+        return
+
+    await callback.answer("⚖️ Rebalancing sessions...", show_alert=False)
+    await callback.message.edit_text(
+        "⏳ <b>Rebalancing sessions across APIs...</b>\n\nPlease wait.",
+        parse_mode="HTML"
+    )
+
+    total_sessions, total_apis, dist_text = await rebalance_sessions_across_apis()
+
+    if total_apis == 0:
+        result_text = (
+            "⚠️ <b>No API credentials stored.</b>\n\n"
+            "Add at least one API credential first."
+        )
+    elif total_sessions == 0:
+        result_text = "ℹ️ <b>No sessions to distribute.</b>"
+    else:
+        result_text = (
+            f"✅ <b>Rebalance Complete!</b>\n\n"
+            f"🔢 Total Sessions: {total_sessions}\n"
+            f"🔑 Total APIs: {total_apis}\n\n"
+            f"<b>Distribution:</b>\n{dist_text}"
+        )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔙 Back to API Manager", callback_data="manage_apis")
+    ]])
+    await callback.message.edit_text(result_text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "manage_accounts")
+async def manage_accounts_callback(callback: types.CallbackQuery):
+    """Back to Accounts button — re-renders the Telegram Accounts page via callback edit."""
+    if callback.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID]:
+        user = await users_collection.find_one({"user_id": callback.from_user.id})
+        if not user or not user.get("is_admin", False):
+            await callback.answer("⛔ Admin only.", show_alert=True)
+            return
+
+    sessions = filter_live_sessions(await get_all_sessions())
+    total_pages = max(1, (len(sessions) + ACCOUNTS_PER_PAGE - 1) // ACCOUNTS_PER_PAGE)
+    page = 0
+    text = render_account_page(sessions, page, total_pages)
+
+    nav_buttons = []
+    if total_pages > 1:
+        nav_buttons.append(InlineKeyboardButton(text="➡️ Next", callback_data="acc_page:1"))
+
+    keyboard_layout = []
+    if nav_buttons:
+        keyboard_layout.append(nav_buttons)
+    keyboard_layout.extend([
+        [InlineKeyboardButton(text="👤 Login New Account (Legacy)", callback_data="login_account")],
+        [
+            InlineKeyboardButton(text="📝 Generate Session (New)", callback_data="generate_session"),
+            InlineKeyboardButton(text="🔑 Login with String",      callback_data="login_string_session")
+        ],
+        [InlineKeyboardButton(text="📦 Bulk Import (ZIP)",         callback_data="bulk_import_zip")],
+        [InlineKeyboardButton(text="🗑️ Remove Account",            callback_data="remove_account")],
+        [InlineKeyboardButton(text="🔑 Manage API Credentials",    callback_data="manage_apis")]
+    ])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_layout)
+
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
+
+
 @dp.callback_query(F.data.startswith("remove_session:"))
 async def remove_session_handler(callback: types.CallbackQuery):
     session_id = callback.data.split(":")[1]
@@ -6268,14 +7326,18 @@ async def remove_session_handler(callback: types.CallbackQuery):
     result = await sessions_collection.delete_one({"_id": ObjectId(session_id)})
 
     if result.deleted_count:
-        # Reload clients after removal
-        await load_all_clients()
+        # Remove from active memory without full reload
+        await disconnect_active_client_by_identity(
+            phone=session.get('phone'),
+            user_id=session.get('user_id')
+        )
+        remove_session_file_by_name(session.get('session_name'))
 
         await callback.answer("✅ Account removed successfully.")
         await callback.message.edit_text(
             f"❌ <b>Account Removed</b>\n\n"
-            f"📞 Phone: {session.get('phone', 'N/A')}\n"
-            f"👤 Username: @{session.get('username', 'N/A')}\n\n"
+            f"📞 Phone/Session: {get_session_display_label(session)}\n"
+            f"👤 Username: {get_session_username_text(session)}\n\n"
             f"This account has been removed from the system.",
             parse_mode="HTML"
         )
@@ -6294,49 +7356,24 @@ async def start_remove_account(callback: types.CallbackQuery, state: FSMContext)
     # Build text with status indicators
     text = "📱 <b>Select an account to remove:</b>\n\n"
     for i, session in enumerate(sessions, 1):
-        # Get status with emoji indicator
-        status = session.get('status', 'unknown')
-        if status == 'active':
-            status_emoji = "✅"
-            status_text = "Active"
-        elif status == 'unauthorized':
-            status_emoji = "⚠️"
-            status_text = "Expired"
-        elif status == 'connection_error':
-            status_emoji = "🔌"
-            status_text = "Connection Error"
-        elif status == 'error' or status == 'load_error':
-            status_emoji = "❌"
-            status_text = "Error"
-        else:
-            status_emoji = "❓"
-            status_text = "Unknown"
-        
-        text += f"{i}. {session['phone']} {status_emoji} {status_text}\n"
-    
-    text += "\n💡 <b>Status Guide:</b>\n"
-    text += "✅ Active - Working normally\n"
-    text += "⚠️ Expired - Session needs re-authentication\n"
-    text += "🔌 Connection Error - Network/API issue (may auto-recover)\n"
-    text += "❌ Error - Needs attention\n\n"
-    text += "<i>Sessions are NEVER auto-deleted. You have full control.</i>"
+        status_emoji, status_text = get_session_status_meta(session)
+        text += f"{i}. {get_session_display_label(session)} ({get_session_username_text(session)}) {status_emoji} {status_text}\n"
+
+    text += (
+        "\n<blockquote expandable>"
+        "💡 <b>Status Guide:</b>\n"
+        "✅ Active - Working normally\n"
+        "⚠️ Expired - Session needs re-authentication\n"
+        "🔌 Connection Error - Network/API issue (may auto-recover)\n"
+        "❌ Error - Needs attention\n\n"
+        "<i>Sessions are NEVER auto-deleted. You have full control.</i>"
+        "</blockquote>"
+    )
 
     builder = ReplyKeyboardBuilder()
     for session in sessions:
-        # Get status emoji for keyboard button
-        status = session.get('status', 'unknown')
-        if status == 'active':
-            status_emoji = "✅"
-        elif status == 'unauthorized':
-            status_emoji = "⚠️"
-        elif status == 'connection_error':
-            status_emoji = "🔌"
-        elif status == 'error' or status == 'load_error':
-            status_emoji = "❌"
-        else:
-            status_emoji = "❓"
-        
-        button_text = f"{session['phone']} {status_emoji}"
+        status_emoji, _ = get_session_status_meta(session)
+        button_text = f"{get_session_display_label(session)} {status_emoji}"
         builder.add(KeyboardButton(text=button_text))
     builder.adjust(2)
     builder.row(KeyboardButton(text="⬅️ Cancel"))
@@ -6363,33 +7400,23 @@ async def remove_account_from_admin(message: types.Message, state: FSMContext):
 
     text = "📱 <b>Telegram Accounts to Remove:</b>\n\n"
     for i, session in enumerate(sessions, 1):
-        # Get status with emoji indicator
-        status = session.get('status', 'unknown')
-        if status == 'active':
-            status_emoji = "✅"
-            status_text = "Active"
-        elif status == 'unauthorized':
-            status_emoji = "⚠️"
-            status_text = "Expired"
-        elif status == 'connection_error':
-            status_emoji = "🔌"
-            status_text = "Connection Error"
-        elif status == 'error' or status == 'load_error':
-            status_emoji = "❌"
-            status_text = "Error"
-        else:
-            status_emoji = "❓"
-            status_text = "Unknown"
-        
-        text += f"{i}. {session['phone']} - @{session.get('username', 'N/A')} {status_emoji} {status_text}\n"
+        status_emoji, status_text = get_session_status_meta(session)
+        text += (
+            f"{i}. {get_session_display_label(session)} - "
+            f"{get_session_username_text(session)} {status_emoji} {status_text}\n"
+        )
 
-    text += "\n💡 <b>Status Guide:</b>\n"
-    text += "✅ Active - Working normally\n"
-    text += "⚠️ Expired - Session needs re-authentication\n"
-    text += "🔌 Connection Error - Network/API issue (may auto-recover)\n"
-    text += "❌ Error - Needs attention\n\n"
-    text += "<i>Sessions are NEVER auto-deleted. You have full control.</i>\n\n"
-    text += "📞 <b>Enter the phone number you want to remove:</b>\n<i>(Example: +1234567890)</i>"
+    text += (
+        "\n<blockquote expandable>"
+        "💡 <b>Status Guide:</b>\n"
+        "✅ Active - Working normally\n"
+        "⚠️ Expired - Session needs re-authentication\n"
+        "🔌 Connection Error - Network/API issue (may auto-recover)\n"
+        "❌ Error - Needs attention\n\n"
+        "<i>Sessions are NEVER auto-deleted. You have full control.</i>"
+        "</blockquote>\n\n"
+    )
+    text += "📞 <b>Enter the phone/session ID you want to remove:</b>\n<i>(Example: +1234567890 or session:abc123)</i>"
 
     await message.answer(
         text,
@@ -6408,12 +7435,18 @@ async def confirm_remove_account(message: types.Message, state: FSMContext):
         await admin_command(message,state)
         return
 
-    # Extract phone number (remove status emoji if present)
-    phone = message.text.strip()
-    # Remove any emoji characters to get clean phone number
-    phone = ''.join(c for c in phone if c.isdigit() or c == '+')
-    
+    # Extract phone/session id (button text format: "<id> <emoji>")
+    raw_value = message.text.strip()
+    phone = raw_value.split()[0] if raw_value else ""
+
     session = await sessions_collection.find_one({"phone": phone})
+
+    # Backward-compatible fallback for plain manual phone input formatting
+    if not session:
+        numeric_phone = ''.join(c for c in raw_value if c.isdigit() or c == '+')
+        if numeric_phone:
+            phone = numeric_phone
+            session = await sessions_collection.find_one({"phone": phone})
 
     if not session:
         await message.answer(
@@ -6429,29 +7462,13 @@ async def confirm_remove_account(message: types.Message, state: FSMContext):
 
     await state.update_data(phone=phone)
 
-    # Get status with emoji indicator
-    status = session.get('status', 'unknown')
-    if status == 'active':
-        status_emoji = "✅"
-        status_text = "Active - Working normally"
-    elif status == 'unauthorized':
-        status_emoji = "⚠️"
-        status_text = "Expired - Session needs re-authentication"
-    elif status == 'connection_error':
-        status_emoji = "🔌"
-        status_text = "Connection Error - Network/API issue"
-    elif status == 'error' or status == 'load_error':
-        status_emoji = "❌"
-        status_text = "Error - Needs attention"
-    else:
-        status_emoji = "❓"
-        status_text = "Unknown status"
+    status_emoji, status_text = get_session_status_meta(session)
 
     confirmation_text = (
         f"⚠️ <b>Confirm Account Removal</b>\n\n"
-        f"📞 <b>Phone:</b> <code>{session['phone']}</code>\n"
+        f"📞 <b>Phone/Session:</b> <code>{get_session_display_label(session)}</code>\n"
         f"👤 <b>Name:</b> {session.get('first_name', 'N/A')} {session.get('last_name', '')}\n"
-        f"🆔 <b>Username:</b> @{session.get('username', 'N/A')}\n"
+        f"🆔 <b>Username:</b> {get_session_username_text(session)}\n"
         f"🆔 <b>User ID:</b> <code>{session.get('user_id', 'N/A')}</code>\n"
         f"📊 <b>Status:</b> {status_emoji} {status_text}\n"
         f"📅 <b>Added:</b> {session['created_at'].strftime('%Y-%m-%d %H:%M')}\n\n"
@@ -6483,16 +7500,19 @@ async def remove_account_confirm(callback: types.CallbackQuery, state: FSMContex
     # Remove from database
     await remove_session(phone)
 
-    # Reload active clients (disconnect removed client)
-    global active_clients
-    active_clients = []
-    await load_all_clients()
+    # Remove from active memory without reloading all accounts
+    await disconnect_active_client_by_identity(
+        phone=session.get('phone') if session else phone,
+        user_id=session.get('user_id') if session else None
+    )
+    if session:
+        remove_session_file_by_name(session.get('session_name'))
 
     success_text = (
         f"✅ <b>Account Removed Successfully!</b>\n\n"
-        f"📞 <b>Phone:</b> <code>{phone}</code>\n"
-        f"👤 <b>Account:</b> @{session.get('username', 'N/A')}\n\n"
-        f"🔄 Active clients reloaded: {len(active_clients)}\n"
+        f"📞 <b>Phone/Session:</b> <code>{phone}</code>\n"
+        f"👤 <b>Account:</b> {get_session_username_text(session) if session else 'N/A'}\n\n"
+        f"🟢 Active clients now: {len(get_active_clients())}\n"
         f"This account will no longer be used by the bot."
     )
 
@@ -6549,7 +7569,7 @@ async def admin_command(message: types.Message, state: FSMContext):
             [KeyboardButton(text="📦 User Orders"), KeyboardButton(text="📢 Broadcast")],
             [KeyboardButton(text="💰 Pricing"), KeyboardButton(text="📱 Telegram Accounts")],
             [KeyboardButton(text="👑 Make Admins"), KeyboardButton(text="🗑️ Remove Admin")],
-            [KeyboardButton(text="⚡️ Powers")],
+            [KeyboardButton(text="⚡️ Powers"), KeyboardButton(text="🖼️ Set UPI QR")],
             [KeyboardButton(text="⬅️ Main Menu")]
         ]
     else:
@@ -6562,7 +7582,7 @@ async def admin_command(message: types.Message, state: FSMContext):
             "pricing": True,
             "telegram_accounts": True
         })
-        
+
         keyboard = []
         row1 = []
         if user_permissions.get("statistics", True):
@@ -6571,7 +7591,7 @@ async def admin_command(message: types.Message, state: FSMContext):
             row1.append(KeyboardButton(text="👤 Manage User"))
         if row1:
             keyboard.append(row1)
-        
+
         row2 = []
         if user_permissions.get("user_orders", True):
             row2.append(KeyboardButton(text="📦 User Orders"))
@@ -6579,7 +7599,7 @@ async def admin_command(message: types.Message, state: FSMContext):
             row2.append(KeyboardButton(text="📢 Broadcast"))
         if row2:
             keyboard.append(row2)
-        
+
         row3 = []
         if user_permissions.get("pricing", True):
             row3.append(KeyboardButton(text="💰 Pricing"))
@@ -6587,7 +7607,8 @@ async def admin_command(message: types.Message, state: FSMContext):
             row3.append(KeyboardButton(text="📱 Telegram Accounts"))
         if row3:
             keyboard.append(row3)
-        
+
+        keyboard.append([KeyboardButton(text="🖼️ Set UPI QR")])
         keyboard.append([KeyboardButton(text="⬅️ Main Menu")])
 
     await message.answer(
@@ -6606,7 +7627,7 @@ async def admin_stats(message: types.Message, state: FSMContext):
     user = await users_collection.find_one({"user_id": message.from_user.id})
     if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID] and (not user or not user.get('is_admin', False)):
         return
-    
+
     # Check permission for non-major admins
     if message.from_user.id != MAJOR_ADMIN_ID and message.from_user.id != ADMIN_ID:
         user_permissions = user.get('admin_permissions', {})
@@ -6733,7 +7754,7 @@ async def process_make_admin(message: types.Message, state: FSMContext):
                 "admin_permissions": default_permissions
             }
             await users_collection.insert_one(user_data)
-            
+
             await message.answer(
                 f"✅ *Admin Created Successfully!*\n\n"
                 f"🆔 *User ID:* `{target_user_id}`\n"
@@ -6814,7 +7835,7 @@ async def remove_admin_handler(message: types.Message, state: FSMContext):
 
     # Get list of current admins
     admins = await users_collection.find({"is_admin": True}).to_list(None)
-    
+
     if not admins:
         await message.answer("ℹ️ No admins found in the system.")
         await admin_command(message, state)
@@ -6991,7 +8012,7 @@ async def powers_management_handler(message: types.Message, state: FSMContext):
         display_name = f"{admin_name}"
         if admin_username:
             display_name += f" (@{admin_username})"
-        
+
         keyboard.append([
             InlineKeyboardButton(
                 text=display_name,
@@ -7017,7 +8038,7 @@ async def show_admin_powers(callback: types.CallbackQuery, state: FSMContext):
 
     # Extract admin user_id
     admin_user_id = int(callback.data.split("_")[-1])
-    
+
     # Get admin details
     admin = await users_collection.find_one({"user_id": admin_user_id})
     if not admin:
@@ -7033,9 +8054,9 @@ async def show_admin_powers(callback: types.CallbackQuery, state: FSMContext):
         "pricing": True,
         "telegram_accounts": True
     }
-    
+
     current_permissions = admin.get('admin_permissions', default_permissions)
-    
+
     # If admin_permissions doesn't exist, set it with defaults
     if 'admin_permissions' not in admin:
         await users_collection.update_one(
@@ -7059,7 +8080,7 @@ async def show_admin_powers(callback: types.CallbackQuery, state: FSMContext):
         is_enabled = current_permissions.get(power_key, True)
         status = "✅ Enabled" if is_enabled else "❌ Disabled"
         action = "disable" if is_enabled else "enable"
-        
+
         keyboard.append([
             InlineKeyboardButton(
                 text=f"{power_label}: {status}",
@@ -7142,7 +8163,7 @@ async def toggle_admin_power(callback: types.CallbackQuery, state: FSMContext):
         "pricing": "💰 Pricing",
         "telegram_accounts": "📱 Telegram Accounts"
     }
-    
+
     power_display = power_names.get(power_key, power_key)
     status_text = "enabled" if new_value else "disabled"
     emoji_status = "✅" if new_value else "❌"
@@ -7191,7 +8212,7 @@ async def powers_back_to_list(callback: types.CallbackQuery, state: FSMContext):
         display_name = f"{admin_name}"
         if admin_username:
             display_name += f" (@{admin_username})"
-        
+
         keyboard.append([
             InlineKeyboardButton(
                 text=display_name,
@@ -7223,7 +8244,7 @@ async def manage_user(message: types.Message, state: FSMContext):
     user = await users_collection.find_one({"user_id": message.from_user.id})
     if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID] and (not user or not user.get('is_admin', False)):
         return
-    
+
     # Check permission for non-major admins
     if message.from_user.id != MAJOR_ADMIN_ID and message.from_user.id != ADMIN_ID:
         user_permissions = user.get('admin_permissions', {})
@@ -7394,7 +8415,7 @@ async def user_orders_prompt(message: types.Message, state: FSMContext):
     user = await users_collection.find_one({"user_id": message.from_user.id})
     if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID] and (not user or not user.get('is_admin', False)):
         return
-    
+
     # Check permission for non-major admins
     if message.from_user.id != MAJOR_ADMIN_ID and message.from_user.id != ADMIN_ID:
         user_permissions = user.get('admin_permissions', {})
@@ -7455,8 +8476,7 @@ async def broadcast_prompt(message: types.Message, state: FSMContext):
     user = await users_collection.find_one({"user_id": message.from_user.id})
     if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID] and (not user or not user.get('is_admin', False)):
         return
-    
-    # Check permission for non-major admins
+
     if message.from_user.id != MAJOR_ADMIN_ID and message.from_user.id != ADMIN_ID:
         user_permissions = user.get('admin_permissions', {})
         if not user_permissions.get('broadcast', True):
@@ -7464,7 +8484,11 @@ async def broadcast_prompt(message: types.Message, state: FSMContext):
             return
 
     await message.answer(
-        "📢 Enter broadcast message:",
+        "📢 <b>Broadcast</b>\n\n"
+        "Send the message you want to broadcast to all users.\n"
+        "Supported types: <b>Text, Photo, Video, Voice, Audio, Document, Sticker, Animation (GIF)</b>\n\n"
+        "<i>You can also send a photo/video with a caption.</i>",
+        parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="⬅️ Cancel")]],
             resize_keyboard=True
@@ -7472,72 +8496,123 @@ async def broadcast_prompt(message: types.Message, state: FSMContext):
     )
     await state.set_state(AdminStates.BROADCASTING)
 
+
 @dp.message(AdminStates.BROADCASTING)
 async def confirm_broadcast(message: types.Message, state: FSMContext):
+    # Cancel shortcut
     if message.text == "⬅️ Cancel":
         await state.clear()
-        await admin_command(message,state)
+        await admin_command(message, state)
         return
 
-    # Store message and show confirmation
-    await state.update_data(broadcast_message=message.text)
+    # Detect content type and build a label for preview
+    if message.photo:
+        content_type = "photo"
+        label = "🖼️ Photo" + (f" + caption: {message.caption}" if message.caption else "")
+    elif message.video:
+        content_type = "video"
+        label = "🎥 Video" + (f" + caption: {message.caption}" if message.caption else "")
+    elif message.voice:
+        content_type = "voice"
+        label = "🎤 Voice message"
+    elif message.audio:
+        content_type = "audio"
+        label = f"🎵 Audio: {message.audio.file_name or 'audio'}"
+    elif message.document:
+        content_type = "document"
+        label = f"📄 Document: {message.document.file_name or 'file'}"
+    elif message.sticker:
+        content_type = "sticker"
+        label = f"🎭 Sticker: {message.sticker.emoji or ''}"
+    elif message.animation:
+        content_type = "animation"
+        label = "🎞️ Animation (GIF)"
+    elif message.text:
+        content_type = "text"
+        label = f"📝 Text:\n\n{message.text}"
+    else:
+        await message.answer("❌ Unsupported message type. Please send text, photo, video, voice, audio, document, sticker, or animation.")
+        return
+
+    # Store reference to original message for copy_message later
+    await state.update_data(
+        broadcast_from_chat_id=message.chat.id,
+        broadcast_message_id=message.message_id,
+        broadcast_content_type=content_type,
+        broadcast_label=label
+    )
     await state.set_state(AdminStates.CONFIRM_BROADCAST)
 
+    # Show preview with confirm/cancel
+    total_users = await users_collection.count_documents({})
     await message.answer(
-        f"📢 Broadcast Message:\n\n{message.text}\n\n"
-        "Send to all users?",
+        f"📢 <b>Broadcast Preview</b>\n\n"
+        f"<b>Type:</b> {label}\n\n"
+        f"<b>Will be sent to:</b> {total_users} users\n\n"
+        f"Confirm broadcast?",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Confirm", callback_data="broadcast_confirm")],
-            [InlineKeyboardButton(text="❌ Cancel", callback_data="broadcast_cancel")]
+            [InlineKeyboardButton(text="✅ Confirm & Send", callback_data="broadcast_confirm")],
+            [InlineKeyboardButton(text="❌ Cancel",         callback_data="broadcast_cancel")]
         ])
     )
+
 
 @dp.callback_query(F.data == "broadcast_confirm", AdminStates.CONFIRM_BROADCAST)
 async def send_broadcast(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    message_text = data.get('broadcast_message')
+    from_chat_id = data.get("broadcast_from_chat_id")
+    message_id   = data.get("broadcast_message_id")
 
-    if not message_text:
-        await callback.answer("No message found")
+    if not from_chat_id or not message_id:
+        await callback.answer("❌ Broadcast message not found. Please try again.", show_alert=True)
+        await state.clear()
         return
 
-    # Get all user IDs
-    users = await users_collection.find({}, {"user_id": 1}).to_list(None)
-    user_ids = [user['user_id'] for user in users]
+    users    = await users_collection.find({}, {"user_id": 1}).to_list(None)
+    user_ids = [u["user_id"] for u in users]
+    total    = len(user_ids)
 
-    await callback.message.edit_text("📢 Sending broadcast...")
+    await callback.message.edit_text(f"📢 Sending broadcast to {total} users…")
 
     success = 0
-    failed = 0
+    failed  = 0
 
     for user_id in user_ids:
         try:
-            await bot.send_message(user_id, message_text)
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=from_chat_id,
+                message_id=message_id
+            )
             success += 1
         except Exception:
             failed += 1
-        await asyncio.sleep(0.1)  # Rate limiting
+        await asyncio.sleep(0.05)   # ~20 msgs/sec — safe for Telegram rate limits
 
-    await callback.message.answer(
-        f"📢 Broadcast completed!\n"
-        f"✅ Success: {success}\n"
-        f"❌ Failed: {failed}"
-    )
     await state.clear()
-    await admin_command(callback.message,state)
+    await callback.message.answer(
+        f"📢 <b>Broadcast Completed!</b>\n\n"
+        f"✅ Delivered: {success}\n"
+        f"❌ Failed: {failed}\n"
+        f"👥 Total: {total}",
+        parse_mode="HTML"
+    )
+    await admin_command(callback.message, state)
+
 
 @dp.callback_query(F.data == "broadcast_cancel", AdminStates.CONFIRM_BROADCAST)
 async def cancel_broadcast(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("❌ Broadcast cancelled")
-    await admin_command(callback.message,state)
+    await callback.message.edit_text("❌ Broadcast cancelled.")
+    await admin_command(callback.message, state)
 
 @dp.message(F.text == "💰 Pricing")
 async def pricing_menu(message: types.Message):
     user = await users_collection.find_one({"user_id": message.from_user.id})
     if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID] and (not user or not user.get('is_admin', False)):
         return
-    
+
     # Check permission for non-major admins
     if message.from_user.id != MAJOR_ADMIN_ID and message.from_user.id != ADMIN_ID:
         user_permissions = user.get('admin_permissions', {})
@@ -7768,6 +8843,114 @@ async def update_exchange_rate(message: types.Message, state: FSMContext):
     await state.clear()
     await pricing_menu(message)
 
+
+# ===== UPI QR MANAGEMENT ===== #
+
+@dp.message(F.text == "🖼️ Set UPI QR")
+async def set_upi_qr_start(message: types.Message, state: FSMContext):
+    user = await users_collection.find_one({"user_id": message.from_user.id})
+    if message.from_user.id not in [ADMIN_ID, MAJOR_ADMIN_ID] and (not user or not user.get('is_admin', False)):
+        return
+
+    # Show current QR if set
+    setting = await settings_collection.find_one({"key": "upi_qr"})
+    if setting and setting.get("file_id"):
+        await bot.send_photo(
+            message.chat.id,
+            photo=setting["file_id"],
+            caption=(
+                "🖼️ <b>Current UPI QR Code</b>\n\n"
+                "Send a new photo to replace it, or /cancel to keep it."
+            ),
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="⬅️ Cancel")]],
+                resize_keyboard=True
+            )
+        )
+    else:
+        await message.answer(
+            "🖼️ <b>Set UPI QR Code</b>\n\n"
+            "No QR is set yet. Send a photo of the UPI QR code to save it.\n\n"
+            "Type /cancel to abort.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="⬅️ Cancel")]],
+                resize_keyboard=True
+            )
+        )
+
+    await state.set_state(AdminStates.SETTING_UPI_QR)
+
+
+@dp.message(AdminStates.SETTING_UPI_QR, F.photo)
+async def set_upi_qr_receive(message: types.Message, state: FSMContext):
+    file_id = message.photo[-1].file_id
+
+    await settings_collection.update_one(
+        {"key": "upi_qr"},
+        {"$set": {"key": "upi_qr", "file_id": file_id, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+
+    # Now ask for UPI ID
+    upi_id_setting = await settings_collection.find_one({"key": "upi_id"})
+    current_upi_id = upi_id_setting.get("value", "") if upi_id_setting else ""
+    current_hint = f"\n\n📌 <b>Current UPI ID:</b> <code>{html_escape(current_upi_id)}</code>" if current_upi_id else ""
+
+    await state.set_state(AdminStates.SETTING_UPI_ID)
+    await message.answer(
+        f"✅ <b>QR Code saved!</b>{current_hint}\n\n"
+        "🏦 Now send the <b>UPI ID</b> (e.g. <code>name@upi</code>) that users should pay to.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Cancel")]],
+            resize_keyboard=True
+        )
+    )
+
+
+@dp.message(AdminStates.SETTING_UPI_QR)
+async def set_upi_qr_invalid(message: types.Message, state: FSMContext):
+    if message.text in ["/cancel", "⬅️ Cancel"]:
+        await state.clear()
+        await admin_command(message, state)
+        return
+    await message.answer("❌ Please send a <b>photo</b> of the UPI QR code.", parse_mode="HTML")
+
+
+@dp.message(AdminStates.SETTING_UPI_ID)
+async def set_upi_id_receive(message: types.Message, state: FSMContext):
+    if message.text in ["/cancel", "⬅️ Cancel"]:
+        await state.clear()
+        await admin_command(message, state)
+        return
+
+    upi_id = message.text.strip()
+    if not upi_id or " " in upi_id:
+        await message.answer(
+            "❌ Invalid UPI ID. It should look like <code>name@upi</code> with no spaces.\n\nTry again:",
+            parse_mode="HTML"
+        )
+        return
+
+    await settings_collection.update_one(
+        {"key": "upi_id"},
+        {"$set": {"key": "upi_id", "value": upi_id, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+
+    await state.clear()
+    await message.answer(
+        f"✅ <b>UPI Setup Complete!</b>\n\n"
+        f"🖼️ QR Code: Saved\n"
+        f"🏦 UPI ID: <code>{html_escape(upi_id)}</code>\n\n"
+        "Users will now see this QR and UPI ID when making payments.",
+        parse_mode="HTML"
+    )
+    await admin_command(message, state)
+
+
 @dp.message(F.text == "⬅️ Main Menu")
 async def back_to_main_menu(message: types.Message, state: FSMContext):
     await state.clear()
@@ -7788,7 +8971,7 @@ async def cancel_admin_action(message: types.Message, state: FSMContext):
 async def process_manual_views(order, to_deliver):
     tasks = []
     for i in range(to_deliver):
-        client = active_clients[i % len(active_clients)]
+        client = get_active_clients()[i % len(get_active_clients())]
         await ensure_client_in_channel(client,order['channel_id'])
         tasks.append(process_view_order(client, order['channel_id'], order['content_id']))
 
@@ -7799,7 +8982,7 @@ async def process_manual_reactions(order, to_deliver):
     tasks = []
     emoji = order['emoji']
     for i in range(to_deliver):
-        client = active_clients[i % len(active_clients)]
+        client = get_active_clients()[i % len(get_active_clients())]
         await ensure_client_in_channel(client,order['channel_id'])
         tasks.append(process_reaction_order(client, order['channel_id'], order['content_id'], emoji))
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -7812,22 +8995,22 @@ async def process_poll_votes_master_worker(order, to_deliver):
         message_id = order['content_id']
         option_index = order.get('option_index', 0)
         poll_options_count = order.get('poll_options_count', 10)
-        
+
         # Use random delay between 10-15s per worker
         delay_seconds = random.uniform(10, 15)
-        
-        print(f"🗳️ Distributing {to_deliver} votes across {len(active_clients)} clients with ~{delay_seconds}s delay")
-        
+
+        print(f"🗳️ Distributing {to_deliver} votes across {len(get_active_clients())} clients with ~{delay_seconds}s delay")
+
         tasks = []
         for i in range(to_deliver):
-            client = active_clients[i % len(active_clients)]
-            
+            client = get_active_clients()[i % len(get_active_clients())]
+
             # Ensure client is in channel
             if not await ensure_client_in_channel(client, channel_id):
                 continue
-                
+
             tasks.append(delayed_vote_order(client, channel_id, message_id, option_index, poll_options_count, delay_seconds * i))
-            
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
         success_count = sum(1 for r in results if r is True)
         return success_count
@@ -7844,9 +9027,9 @@ async def process_poll_votes(order, to_deliver):
     tasks = []
     poll_options_count = order.get('poll_options_count', 10)  # Default 10 options
     option_index = order.get('option_index', 0)
-    
+
     for i in range(to_deliver):
-        client = active_clients[i % len(active_clients)]
+        client = get_active_clients()[i % len(get_active_clients())]
         await ensure_client_in_channel(client, order['channel_id'])
         tasks.append(process_vote_order(client, order['channel_id'], order['content_id'], option_index, poll_options_count))
 
@@ -7888,11 +9071,11 @@ async def task_process_manual_orders():
                 if is_night_hours():
                     # Reduce delivery speed by 70% (divide by 3)
                     night_divisor = get_night_mode_delay_multiplier()
-                    to_deliver = min(remaining, max(1, len(active_clients) // night_divisor))
-                    print(f"🌙 Night mode active - Reduced delivery: {to_deliver} (was {len(active_clients)})")
+                    to_deliver = min(remaining, max(1, len(get_active_clients()) // night_divisor))
+                    print(f"🌙 Night mode active - Reduced delivery: {to_deliver} (was {len(get_active_clients())})")
                 else:
                     # Normal daytime delivery
-                    to_deliver = min(remaining, len(active_clients))
+                    to_deliver = min(remaining, len(get_active_clients()))
 
                 # Process the batch
                 if order['service_identifier'] == "manual_views":
@@ -8056,11 +9239,11 @@ async def reliable_update_processed_today(order_id, message_id, today_str, max_r
 
 # Main Monitor Function - All clients monitor together
 async def ub_moniter():
-    if not active_clients:
+    if not get_active_clients():
         print("⚠️ No active clients for monitoring")
         return
 
-    print(f"👑 Setting up monitoring with {len(active_clients)} clients...")
+    print(f"👑 Setting up monitoring with {len(get_active_clients())} clients...")
 
     async def monitor_channel_telethon(event):
         try:
@@ -8134,7 +9317,7 @@ async def ub_moniter():
                 desired_quantity = min(
                     per_post_quantity,
                     remaining,
-                    len(active_clients),
+                    len(get_active_clients()),
                     max(0, order['posts_per_day'] * order['days'] - order.get('total_posts_processed', 0))
                 )
                 if desired_quantity < 1:
@@ -8191,17 +9374,17 @@ async def ub_moniter():
                 )
 
                 print(f"✅ Finished post {message_id} — Delivered {success_count} {metric} — Total: {new_delivered}/{total_quantity}")
-            
+
             # ===== AUTO POLL/VOTES HANDLING =====
             # Check if this is a poll message
             if hasattr(message, 'media') and hasattr(message.media, 'poll'):
                 poll = message.media.poll
                 poll_options_count = len(poll.answers) if hasattr(poll, 'answers') else 10
-                
+
                 print(f"🗳️ MASTER detected new POLL in channel {channel_id}, message_id: {message_id}")
                 print(f"   Poll Question: {poll.question if hasattr(poll, 'question') else 'N/A'}")
                 print(f"   Options Count: {poll_options_count}")
-                
+
                 # Find all active orders with auto_poll enabled
                 poll_orders = await orders_collection.find({
                     "channel_id": channel_id,
@@ -8209,35 +9392,35 @@ async def ub_moniter():
                     "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
                     "auto_poll_enabled": True
                 }).to_list(None)
-                
+
                 for poll_order in poll_orders:
                     if poll_order.get("is_paused", False):
                         continue
-                    
+
                     # Check if order is still valid
                     order_created = poll_order.get('created_at', datetime.utcnow()).replace(tzinfo=None)
                     expiry_day = order_created.date() + timedelta(days=poll_order.get('days', 0))
                     expiry_time = datetime.combine(expiry_day + timedelta(days=1), datetime.min.time())
                     if datetime.utcnow() >= expiry_time:
                         continue
-                    
+
                     auto_poll_quantity = poll_order.get("auto_poll_votes_quantity", 0)
                     if auto_poll_quantity < 1:
                         continue
-                    
+
                     # Check if already processed
                     last_processed_poll = poll_order.get('last_processed_poll_id', 0)
                     if message_id <= last_processed_poll:
                         continue
-                    
+
                     # Deliver votes
                     print(f"🗳️ Delivering {auto_poll_quantity} auto poll votes for order {poll_order['_id']}")
-                    
+
                     # Use speed multiplier from order
                     success_count = await process_auto_poll_votes_master_worker(
                         poll_order, message_id, channel_id, auto_poll_quantity, poll_options_count
                     )
-                    
+
                     if success_count > 0:
                         # Update order with delivered votes
                         await orders_collection.update_one(
@@ -8260,7 +9443,7 @@ async def ub_moniter():
             traceback.print_exc()
 
     # Register monitor on all clients
-    for i, client in enumerate(active_clients):
+    for i, client in enumerate(get_active_clients()):
         try:
             client.add_event_handler(monitor_channel_telethon, events.NewMessage)
             print(f"✅ Monitoring enabled on client {i}")
@@ -8273,16 +9456,17 @@ async def process_auto_views_master_worker(order, message_id, quantity):
     try:
         channel_id = order['channel_id']
         delay_seconds = get_order_delay_seconds(order)
+        _clients = get_active_clients()
 
-        print(f"📊 Distributing {quantity} views across {len(active_clients)} clients with {delay_seconds}s delay")
+        print(f"📊 Distributing {quantity} views across {len(_clients)} clients with {delay_seconds}s delay")
 
         tasks = []
         for i in range(quantity):
-            client = active_clients[i % len(active_clients)]
+            client = _clients[i % len(_clients)]
 
             # Ensure client is in channel
             if not await ensure_client_in_channel(client, channel_id):
-                print(f"⚠️ Client {i % len(active_clients)} couldn't join channel")
+                print(f"⚠️ Client {i % len(_clients)} couldn't join channel")
                 continue
 
             # Use custom delay
@@ -8309,16 +9493,17 @@ async def process_auto_reactions_master_worker(order, message_id, quantity):
     try:
         channel_id = order['channel_id']
         delay_seconds = get_order_delay_seconds(order)
+        _clients = get_active_clients()
 
-        print(f"❤️ Distributing {quantity} reactions across {len(active_clients)} clients with {delay_seconds}s delay")
+        print(f"❤️ Distributing {quantity} reactions across {len(_clients)} clients with {delay_seconds}s delay")
 
         tasks = []
         for i in range(quantity):
-            client = active_clients[i % len(active_clients)]
+            client = _clients[i % len(_clients)]
 
             # Ensure client is in channel
             if not await ensure_client_in_channel(client, channel_id):
-                print(f"⚠️ Client {i % len(active_clients)} couldn't join channel")
+                print(f"⚠️ Client {i % len(_clients)} couldn't join channel")
                 continue
 
             # Assign emoji for this client-post combination
@@ -8351,22 +9536,23 @@ async def delayed_reaction_order(client, channel_id, message_id, emoji, delay):
 async def process_auto_poll_votes_master_worker(order, message_id, channel_id, quantity, poll_options_count):
     try:
         delay_seconds = get_order_delay_seconds(order)
-        
-        print(f"🗳️ Distributing {quantity} poll votes across {len(active_clients)} clients with ~{delay_seconds}s delay")
+        _clients = get_active_clients()
+
+        print(f"🗳️ Distributing {quantity} poll votes across {len(_clients)} clients with ~{delay_seconds}s delay")
 
         tasks = []
         for i in range(quantity):
-            client_index = i % len(active_clients)
-            client = active_clients[client_index]
+            client_index = i % len(_clients)
+            client = _clients[client_index]
 
             # Ensure client is in channel
             if not await ensure_client_in_channel(client, channel_id):
                 print(f"    ⚠️ Client {client_index} couldn't join channel")
                 continue
-            
+
             # Random option selection for each vote
             option_index = "random"
-            
+
             # Calculate delay for this specific action
             current_delay = delay_seconds * i
             tasks.append(delayed_vote_order(client, channel_id, message_id, option_index, poll_options_count, current_delay))
@@ -8387,13 +9573,22 @@ async def delayed_vote_order(client, channel_id, message_id, option_index, poll_
     return await process_vote_order(client, channel_id, message_id, option_index, poll_options_count)
 
 async def deliver_votes_master_worker(order_id):
-    """Deliver votes using master-worker method - similar to views/reactions delivery"""
+    """
+    Deliver poll votes sequentially, one account per vote.
+
+    Key rules:
+    - Each Telegram account can vote only ONCE per poll.
+    - To avoid same account being reused across multiple orders targeting the same poll,
+      we use a rotating start index based on the order_id hash.
+    - Votes are delivered one at a time with a configurable delay (custom_delay_seconds).
+    - If quantity > available accounts, delivery stops at available account count.
+    """
     try:
         order = await orders_collection.find_one({"_id": order_id})
         if not order:
             print(f"❌ Vote order {order_id} not found")
             return
-        
+
         channel_id = order.get('channel_id')
         content_id = order.get('content_id')
         quantity = order.get('quantity', 0)
@@ -8401,95 +9596,78 @@ async def deliver_votes_master_worker(order_id):
         user_id = order.get('user_id')
         poll_options = order.get('poll_options', [])
         poll_options_count = len(poll_options)
-        
-        if not active_clients:
+        # Use order's custom delay, minimum 10s
+        base_delay = max(10, order.get('custom_delay_seconds', 15) or 15)
+
+        if not get_active_clients():
             print(f"❌ No active clients for vote order {order_id}")
             await orders_collection.update_one(
                 {"_id": order_id},
                 {"$set": {"status": "failed", "error": "No active clients"}}
             )
             return
-        
+
+        _clients = get_active_clients()
+        total_clients = len(_clients)
+        # Limit quantity to available accounts (1 vote per account per poll)
+        effective_quantity = min(quantity, total_clients)
+
+        # Rotate start index by order_id hash so different orders use different accounts
+        order_id_str = str(order_id)
+        start_index = int(order_id_str[-4:], 16) % total_clients if len(order_id_str) >= 4 else 0
+
         print(f"\n{'='*60}")
         print(f"🗳️ VOTE DELIVERY STARTED - Order {order_id}")
-        print(f"📊 Target: {quantity} votes on option {option_index}")
-        print(f"👥 Using {len(active_clients)} client(s)")
+        print(f"📊 Target: {effective_quantity} votes on option {option_index}")
+        print(f"👥 Available: {total_clients} client(s) | Start index: {start_index}")
+        print(f"⏱️ Delay between votes: {base_delay}s")
         print(f"{'='*60}\n")
-        
-        # Update status
+
         await orders_collection.update_one(
             {"_id": order_id},
             {"$set": {"status": "processing", "updated_at": datetime.utcnow()}}
         )
-        
-        # Master-worker distribution
-        master_client = active_clients[0]
-        worker_clients = active_clients[1:] if len(active_clients) > 1 else []
-        
-        total_clients = len(active_clients)
-        votes_per_client = quantity // total_clients
-        remaining_votes = quantity % total_clients
-        
+
         delivered = 0
-        base_delay = 15  # 15 seconds delay between votes
-        
-        # Distribute work
-        async def worker_deliver_votes(client, client_index, votes_to_deliver):
-            nonlocal delivered
-            client_delivered = 0
-            
-            for i in range(votes_to_deliver):
-                try:
-                    # Add delay
-                    if i > 0:
-                        await asyncio.sleep(base_delay)
-                    
-                    # Send vote
-                    success = await process_vote_order(
-                        client,
-                        channel_id,
-                        content_id,
-                        option_index,
-                        poll_options_count
+        failed = 0
+
+        for i in range(effective_quantity):
+            client_index = (start_index + i) % total_clients
+            client = _clients[client_index]
+
+            try:
+                # Add delay before each vote (except the very first)
+                if i > 0:
+                    await asyncio.sleep(base_delay)
+
+                success = await process_vote_order(
+                    client,
+                    channel_id,
+                    content_id,
+                    option_index,
+                    poll_options_count
+                )
+
+                if success:
+                    delivered += 1
+                    print(f"  ✅ Vote {i+1}/{effective_quantity} - Account idx {client_index} - Total delivered: {delivered}")
+                else:
+                    failed += 1
+                    print(f"  ❌ Vote {i+1}/{effective_quantity} - Account idx {client_index} - FAILED (returned False)")
+
+                # Update DB progress every 5 votes
+                if delivered % 5 == 0 and delivered > 0:
+                    await orders_collection.update_one(
+                        {"_id": order_id},
+                        {"$set": {"delivered_votes": delivered, "updated_at": datetime.utcnow()}}
                     )
-                    
-                    if success:
-                        client_delivered += 1
-                        delivered += 1
-                        
-                        # Update progress every 10 votes
-                        if delivered % 10 == 0:
-                            await orders_collection.update_one(
-                                {"_id": order_id},
-                                {
-                                    "$set": {
-                                        "delivered_votes": delivered,
-                                        "updated_at": datetime.utcnow()
-                                    }
-                                }
-                            )
-                            progress = (delivered / quantity) * 100
-                            print(f"  Client {client_index}: {client_delivered} votes | Total: {delivered}/{quantity} ({progress:.1f}%)")
-                    
-                except Exception as e:
-                    print(f"  ❌ Client {client_index} vote error: {e}")
-            
-            return client_delivered
-        
-        # Start master + workers
-        tasks = []
-        
-        # Master gets base allocation + remaining
-        master_votes = votes_per_client + remaining_votes
-        tasks.append(worker_deliver_votes(master_client, 0, master_votes))
-        
-        # Workers get base allocation
-        for i, worker in enumerate(worker_clients, start=1):
-            tasks.append(worker_deliver_votes(worker, i, votes_per_client))
-        
-        # Execute all workers in parallel
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
+            except Exception as e:
+                failed += 1
+                print(f"  ❌ Vote {i+1}/{effective_quantity} - Account idx {client_index} - EXCEPTION: {e}")
+                import traceback
+                traceback.print_exc()
+
         # Final update
         await orders_collection.update_one(
             {"_id": order_id},
@@ -8502,30 +9680,30 @@ async def deliver_votes_master_worker(order_id):
                 }
             }
         )
-        
+
+        success_rate = (delivered / effective_quantity * 100) if effective_quantity > 0 else 0
         print(f"\n{'='*60}")
         print(f"✅ VOTE DELIVERY COMPLETED")
-        print(f"📊 Delivered: {delivered}/{quantity} votes ({(delivered/quantity)*100:.1f}%)")
+        print(f"📊 Delivered: {delivered}/{effective_quantity} votes ({success_rate:.1f}%) | Failed: {failed}")
         print(f"{'='*60}\n")
-        
-        # Notify user
+
         try:
             await bot.send_message(
                 user_id,
                 f"✅ <b>Vote Order Completed!</b>\n\n"
-                f"🗳️ <b>Delivered:</b> {delivered}/{quantity} votes\n"
-                f"📊 <b>Success Rate:</b> {(delivered/quantity)*100:.1f}%\n\n"
+                f"🗳️ <b>Delivered:</b> {delivered}/{effective_quantity} votes\n"
+                f"📊 <b>Success Rate:</b> {success_rate:.1f}%\n\n"
                 f"Thank you for using our service!",
                 parse_mode="HTML"
             )
         except Exception as e:
             print(f"Failed to send completion notification: {e}")
-        
+
     except Exception as e:
         print(f"❌ Vote delivery error for order {order_id}: {e}")
         import traceback
         traceback.print_exc()
-        
+
         await orders_collection.update_one(
             {"_id": order_id},
             {"$set": {"status": "failed", "error": str(e)}}
@@ -8534,21 +9712,25 @@ async def deliver_votes_master_worker(order_id):
 
 
 async def process_reaction_order(client, channel_id, message_id, emoji=None):
-    """Send reaction with retry and error handling using consistent emoji"""
+    """Send reaction with retry and error handling.
+    Each account picks a random emoji from the appropriate pool so deliveries
+    look natural instead of all accounts sending the identical reaction.
+    """
     retries = 2
 
-    # Process emoji selection BEFORE the retry loop
-    if emoji == "❤️ Positive":
-        reaction_list = ["❤️", "🔥", "👍", "👏", "🎉", "🤩", "😍"]
-        emoji = random.choice(reaction_list)
+    # Per-account emoji randomisation — pick fresh from pool on every call
+    if not emoji or emoji in ("❤️ Positive", "🤗 Custom"):
+        # Default / positive type → random positive
+        emoji = random.choice(POSITIVE_REACTIONS)
     elif emoji == "😂 Negative":
-        reaction_list = ["👎", "🤬", "🤮", "💩", "🤡", "🥱", "🌭", "🤣", "🍌", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "💅", "🤪", "👾", "🤷‍♂", "🤷", "🤷‍♀", "😡"]
-        emoji = random.choice(reaction_list)
-    elif not emoji or emoji == "🤗 Custom":
-        # Use assigned emoji or default
-        session_str = client.session.save()
-        key = (channel_id, message_id, session_str)
-        emoji = client_reactions.get(key, random.choice(["❤️", "🔥", "👍", "👏", "🎉", "🤩", "😍"]))
+        emoji = random.choice(NEGATIVE_REACTIONS)
+    elif emoji in POSITIVE_REACTIONS:
+        # Specific positive emoji selected — still randomise across pool for variety
+        emoji = random.choice(POSITIVE_REACTIONS)
+    elif emoji in NEGATIVE_REACTIONS:
+        # Specific negative emoji selected — randomise across negative pool
+        emoji = random.choice(NEGATIVE_REACTIONS)
+    # else: truly custom emoji not in either pool → use as-is
 
     await client(functions.account.UpdateStatusRequest(offline=False))
 
@@ -8703,7 +9885,7 @@ async def ensure_client_in_channel_2(client, invite_link: str):
 
         # Normalize link and extract invite code/username
         invite_code = invite_link.strip().split("/")[-1]
-        
+
         # Handle different link formats
         is_private_link = False
         if "joinchat" in invite_link.lower():
@@ -8720,14 +9902,14 @@ async def ensure_client_in_channel_2(client, invite_link: str):
             try:
                 updates = await client(ImportChatInviteRequest(invite_code))
                 print(f"✅ Joined private channel via invite link")
-                
+
                 # Extract channel from updates
                 if hasattr(updates, 'chats') and updates.chats:
                     entity = updates.chats[0]
                     print(f"✅ Got channel entity from join response: {entity.title if hasattr(entity, 'title') else 'Unknown'}")
                 else:
                     entity = None
-                    
+
             except UserAlreadyParticipantError:
                 print(f"ℹ️ Already a member of this private channel")
                 entity = None  # Will need to find it later
@@ -8818,7 +10000,7 @@ async def ensure_client_in_channel_2(client, invite_link: str):
                                 # For private channels, we'll use the first channel we find
                                 # This works because we just joined it
                                 break
-                        
+
                         if not entity:
                             result["error"] = "Could not find the private channel after joining. Please try again."
                             return result
@@ -8973,12 +10155,14 @@ async def support_yes_callback(callback: types.CallbackQuery, state: FSMContext)
         InlineKeyboardButton(text="↩️ Reply User", callback_data=f"support_reply:{user_id}")
     )
 
+    user_link = f"<a href='tg://user?id={user_id}'>{html_escape(username)}</a>"
+
     # Build header text
     if query_photo:
         msg_label = "(photo attached)" if not query_text else query_text
         admin_text = (
             f"📩 <b>New Support Message</b>\n\n"
-            f"👤 <b>User:</b> {html_escape(username)}\n"
+            f"👤 <b>User:</b> {user_link}\n"
             f"🆔 <b>User ID:</b> {user_id}\n\n"
             f"📝 <b>Message:</b>\n"
             f"<blockquote expandable>{html_escape(msg_label)}</blockquote>"
@@ -8986,14 +10170,14 @@ async def support_yes_callback(callback: types.CallbackQuery, state: FSMContext)
     elif query_voice:
         admin_text = (
             f"📩 <b>New Support Message</b>\n\n"
-            f"👤 <b>User:</b> {html_escape(username)}\n"
+            f"👤 <b>User:</b> {user_link}\n"
             f"🆔 <b>User ID:</b> {user_id}\n\n"
             f"🎤 <b>Message:</b> (voice message below)"
         )
     else:
         admin_text = (
             f"📩 <b>New Support Message</b>\n\n"
-            f"👤 <b>User:</b> {html_escape(username)}\n"
+            f"👤 <b>User:</b> {user_link}\n"
             f"🆔 <b>User ID:</b> {user_id}\n\n"
             f"📝 <b>Message:</b>\n"
             f"<blockquote expandable>{html_escape(query_text)}</blockquote>"
@@ -9126,7 +10310,7 @@ async def restart_command(message: types.Message):
     user = await users_collection.find_one({"user_id": message.from_user.id})
     is_major_admin = message.from_user.id in [ADMIN_ID, MAJOR_ADMIN_ID]
     is_admin = user and user.get('is_admin', False)
-    
+
     if not (is_major_admin or is_admin):
         await message.answer("⛔️ This command is only available to admins.")
         return
@@ -9137,23 +10321,23 @@ async def restart_command(message: types.Message):
         "✅ Bot will be back online in 5-10 seconds!",
         parse_mode='Markdown'
     )
-    
+
     # Give time for message to send
     await asyncio.sleep(1)
-    
+
     # Get current script path
     script_path = os.path.abspath(__file__)
-    
+
     # Restart using subprocess and then exit current process
     import subprocess
     subprocess.Popen([sys.executable, script_path], 
                      stdout=open('/app/bot_output.log', 'a'),
                      stderr=subprocess.STDOUT,
                      env=os.environ.copy())
-    
+
     # Stop the bot gracefully
     await dp.stop_polling()
-    
+
     # Exit current process
     os._exit(0)
 
@@ -9335,19 +10519,20 @@ async def validate_invite_link_only(client, invite_link: str):
 
 
 async def join_all_clients_to_channel(channel_id, invite_link):
-    if not active_clients:
+    if not get_active_clients():
         return
 
-    print(f"🔗 Joining {len(active_clients)} clients to channel {channel_id} after payment confirmation...")
+    print(f"🔗 Joining {len(get_active_clients())} clients to channel {channel_id} after payment confirmation...")
 
     async def join_single_client(i, client):
         try:
+            # Check if already in channel
             already_in = False
             try:
                 entity = await client.get_entity(PeerChannel(channel_id))
                 await client.get_permissions(entity)
                 already_in = True
-            except (ValueError, errors.ChannelPrivateError):
+            except Exception:
                 pass
 
             if already_in:
@@ -9355,27 +10540,45 @@ async def join_all_clients_to_channel(channel_id, invite_link):
                 await mute_channel_for_client(client, channel_id)
                 return True
 
-            invite_code = invite_link.strip().split("/")[-1]
-            is_private = False
-            if "joinchat" in invite_link.lower():
-                invite_code = invite_code.replace("joinchat", "").strip()
-                is_private = True
-            elif "+" in invite_link and "t.me/+" in invite_link:
-                invite_code = invite_code.replace("+", "")
-                is_private = True
+            link = invite_link.strip()
+
+            # Determine if this is a private invite link or a public channel/group link
+            is_private = (
+                "joinchat" in link.lower() or
+                ("t.me/+" in link) or
+                ("+joinchat" in link)
+            )
 
             if is_private:
+                # Extract invite hash for private links
+                # Handles: https://t.me/+HASH, https://t.me/joinchat/HASH
+                invite_hash = link.split("/")[-1].lstrip("+")
                 try:
-                    await client(ImportChatInviteRequest(invite_code))
+                    result = await client(ImportChatInviteRequest(invite_hash))
+                    print(f"  Client {i}: Joined via private invite link")
                 except UserAlreadyParticipantError:
-                    pass
+                    print(f"  Client {i}: Already a participant (private link)")
+                except errors.InviteHashExpiredError:
+                    print(f"  Client {i}: Invite hash expired - skipping")
+                    return False
+                except errors.InviteHashInvalidError:
+                    print(f"  Client {i}: Invite hash invalid - skipping")
+                    return False
             else:
+                # Public channel/group: extract username from URL
+                # Handles: https://t.me/username, https://telegram.me/username
+                username = link.split("/")[-1].lstrip("@")
                 try:
-                    await client(JoinChannelRequest(invite_code))
+                    # Resolve the entity first, then join
+                    resolved = await client.get_entity(username)
+                    await client(JoinChannelRequest(resolved))
+                    print(f"  Client {i}: Joined public channel @{username}")
                 except UserAlreadyParticipantError:
-                    pass
+                    print(f"  Client {i}: Already a participant (public)")
+                except Exception as e:
+                    print(f"  Client {i}: Failed to join public channel - {e}")
+                    return False
 
-            print(f"  Client {i}: Joined channel successfully")
             await mute_channel_for_client(client, channel_id)
             return True
 
@@ -9387,19 +10590,19 @@ async def join_all_clients_to_channel(channel_id, invite_link):
             print(f"  Client {i}: Failed to join - {e}")
             return False
 
-    tasks = [join_single_client(i, c) for i, c in enumerate(active_clients)]
+    tasks = [join_single_client(i, c) for i, c in enumerate(get_active_clients())]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     joined = sum(1 for r in results if r is True)
-    print(f"✅ {joined}/{len(active_clients)} clients joined channel {channel_id}")
+    print(f"✅ {joined}/{len(get_active_clients())} clients joined channel {channel_id}")
 
 
 async def leave_channel_from_all_clients(channel_id):
-    if not active_clients:
+    if not get_active_clients():
         return
 
     print(f"🚪 Leaving channel {channel_id} for all clients except client[0]...")
 
-    for i, client in enumerate(active_clients):
+    for i, client in enumerate(get_active_clients()):
         if i == 0:
             continue
         try:
@@ -9462,13 +10665,13 @@ async def enable_night_mode_auto():
     """Automatically enable night mode at 11 PM IST for all active orders"""
     try:
         print("🌙 Auto-enabling Night Mode at 11 PM IST...")
-        
+
         # Get all active orders
         active_orders = await orders_collection.find({
             "status": {"$in": ["confirmed", "processing"]},
             "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]}
         }).to_list(None)
-        
+
         updated_count = 0
         for order in active_orders:
             # Enable night mode
@@ -9481,7 +10684,7 @@ async def enable_night_mode_auto():
                     }
                 }
             )
-            
+
             # Send notification to user
             user_id = order.get("user_id")
             try:
@@ -9496,7 +10699,7 @@ async def enable_night_mode_auto():
                 updated_count += 1
             except Exception as e:
                 print(f"Failed to send night mode notification to user {user_id}: {e}")
-        
+
         print(f"✅ Night Mode enabled for {updated_count} active orders")
     except Exception as e:
         print(f"❌ Error in enable_night_mode_auto: {e}")
@@ -9505,14 +10708,14 @@ async def disable_night_mode_auto():
     """Automatically disable night mode at 7 AM IST for all active orders"""
     try:
         print("☀️ Auto-disabling Night Mode at 7 AM IST...")
-        
+
         # Get all active orders with night mode enabled
         active_orders = await orders_collection.find({
             "status": {"$in": ["confirmed", "processing"]},
             "service_identifier": {"$in": ["views_by_followers", "reactions_by_followers"]},
             "night_mode_enabled": True
         }).to_list(None)
-        
+
         updated_count = 0
         for order in active_orders:
             # Disable night mode
@@ -9525,7 +10728,7 @@ async def disable_night_mode_auto():
                     }
                 }
             )
-            
+
             # Send notification to user
             user_id = order.get("user_id")
             try:
@@ -9540,7 +10743,7 @@ async def disable_night_mode_auto():
                 updated_count += 1
             except Exception as e:
                 print(f"Failed to send day mode notification to user {user_id}: {e}")
-        
+
         print(f"✅ Day Mode enabled for {updated_count} active orders")
     except Exception as e:
         print(f"❌ Error in disable_night_mode_auto: {e}")
@@ -9548,9 +10751,9 @@ async def disable_night_mode_auto():
 def setup_night_mode_scheduler():
     """Setup APScheduler for automatic night mode toggling"""
     from datetime import timezone, timedelta as td
-    
+
     scheduler = AsyncIOScheduler(timezone=timezone(td(hours=5, minutes=30)))  # IST timezone
-    
+
     # Schedule night mode ON at 11:00 PM IST
     scheduler.add_job(
         enable_night_mode_auto,
@@ -9559,7 +10762,7 @@ def setup_night_mode_scheduler():
         name='Enable Night Mode at 11 PM IST',
         replace_existing=True
     )
-    
+
     # Schedule night mode OFF at 7:00 AM IST
     scheduler.add_job(
         disable_night_mode_auto,
@@ -9568,14 +10771,30 @@ def setup_night_mode_scheduler():
         name='Disable Night Mode at 7 AM IST',
         replace_existing=True
     )
-    
+
     scheduler.start()
     print("✅ Night Mode Scheduler initialized (11 PM ON | 7 AM OFF IST)")
     return scheduler
 
 
+async def on_dead_session_alert(session_name: str, error: str):
+    """Admin ko alert karo jab koi session permanently dead ho jaye (AuthKeyDuplicated etc.)"""
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ <b>Session Permanently Dead!</b>\n\n"
+            f"📁 <b>Session:</b> <code>{session_name}</code>\n"
+            f"💀 <b>Reason:</b> <code>{error[:300] if error else 'Unknown'}</code>\n\n"
+            f"❌ Auth key was used from 2 different IPs simultaneously — Telegram blacklisted it.\n"
+            f"🔧 <b>Action:</b> Delete old .session file and re-add this account via /admin → Telegram Accounts",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
 async def main():
-    global public_url
+    global public_url, session_mgr
 
     try:
         print("🚀 Starting bot initialization...")
@@ -9607,32 +10826,48 @@ async def main():
         flask_thread.start()
         print("✅ Flask webhook server started")
 
-        print("👥 Loading Telegram client sessions...")
-        # Try loading from session files first (more stable)
-        await load_all_clients_from_files()
-        
-        # If no clients loaded, try database method as fallback
-        if not active_clients:
-            print("\n💡 No session files found, trying database method...")
-            await load_all_clients()
+        # ===== NEW: ROBUST SESSION MANAGER =====
+        print("👥 Loading Telegram client sessions (Robust Session Manager)...")
+        sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+        os.makedirs(sessions_dir, exist_ok=True)
 
-        if active_clients:
-            print(f"✅ Loaded {len(active_clients)} Telegram clients")
+        session_mgr = SessionManager(
+            sessions_collection=sessions_collection,
+            sessions_dir=sessions_dir,
+            api_id=API_ID,
+            api_hash=API_HASH,
+            health_check_interval=480,   # ping every 8 minutes
+            connect_stagger=1.5,         # 1.5s delay between each session connect
+            startup_wait=5.0,            # 5s wait before first connect (IP stabilize)
+            on_dead_session=on_dead_session_alert,
+        )
+
+        # Share the same list object so register_client_as_active and
+        # session_mgr both read/write to the same pool.
+        session_mgr.active_clients = active_clients
+
+        await session_mgr.load_all()
+
+        print(f"📁 Session files directory: {sessions_dir}")
+        print("   OR add accounts via /admin -> Telegram Accounts")
+
+        if get_active_clients():
+            print(f"✅ {len(get_active_clients())} Telegram client(s) loaded and alive")
             print("📡 Setting up monitoring system...")
-            await ub_moniter()  # All clients monitor
+            await ub_moniter()
             print("✅ All clients are now monitoring channels")
         else:
-            print("⚠️ No active Telegram clients found.")
+            print("⚠️ No active Telegram clients found. Add .session files to sessions/ folder.")
 
-        sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
-        print(f"📁 Place .session files in {sessions_dir} directory")
-        print("   OR add accounts via /admin -> Telegram Accounts")
+        # Start background health monitor (auto-reconnect + dead session detection)
+        asyncio.create_task(session_mgr.health_monitor_loop())
+        print("🔍 Session health monitor started (8-min interval)")
 
         print("⚙️ Starting background tasks...")
         asyncio.create_task(task_process_manual_orders())
         asyncio.create_task(task_reset_daily_posts())
         asyncio.create_task(expire_due_orders())
-        
+
         # Setup night mode automation scheduler
         print("🌙 Setting up Night Mode automation...")
         setup_night_mode_scheduler()
@@ -9662,14 +10897,17 @@ async def shutdown():
     # Wait for tasks to be cancelled
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Disconnect all clients
-    for i, client in enumerate(active_clients):
-        try:
-            if client.is_connected():
-                await client.disconnect()
-                print(f"✅ Client {i} disconnected")
-        except Exception as e:
-            print(f"⚠️ Error disconnecting client {i}: {e}")
+    # Disconnect all clients via session manager
+    if session_mgr is not None:
+        await session_mgr.disconnect_all()
+    else:
+        for i, client in enumerate(get_active_clients()):
+            try:
+                if client.is_connected():
+                    await client.disconnect()
+                    print(f"✅ Client {i} disconnected")
+            except Exception as e:
+                print(f"⚠️ Error disconnecting client {i}: {e}")
 
     print("✅ All clients disconnected")
     print("✅ Cleanup completed")
