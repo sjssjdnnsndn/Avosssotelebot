@@ -9,6 +9,7 @@ import zipfile
 import tempfile
 import shutil
 import glob
+import accounts_shop
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -1572,6 +1573,9 @@ def get_main_menu_keyboard():
         [
             KeyboardButton(text="👤 My Account"),
             KeyboardButton(text="🆘 Support")
+        ],
+        [
+            KeyboardButton(text="🛒 Buy Telegram Accounts")
         ]
     ]
     return ReplyKeyboardMarkup(
@@ -2141,6 +2145,121 @@ async def cmd_start(message: types.Message):
         "Welcome! Please select a service:",
         reply_markup=get_main_menu_keyboard()
     )
+
+# ===== BUY TELEGRAM ACCOUNTS - ENTRY POINT ===== #
+@dp.message(F.text == "🛒 Buy Telegram Accounts")
+async def buy_accounts_entry(message: types.Message, state: FSMContext):
+    await state.clear()
+    await accounts_shop.acct_show_main_menu(message)
+
+
+@dp.message(F.text == "⬅️ Back to Main Menu")
+async def back_to_main_from_accounts(message: types.Message, state: FSMContext):
+    await state.clear()
+    accounts_shop.acct_clear_state(message.from_user.id)
+    await message.answer("🏠 Main Menu", reply_markup=get_main_menu_keyboard())
+
+
+@dp.message(Command("acctreply"))
+async def acct_admin_reply(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        parts = message.text.split(maxsplit=2)
+        if len(parts) < 3:
+            raise ValueError()
+        _, uid_str, reply_text = parts
+        target_uid = int(uid_str)
+        await bot.send_message(target_uid, f"✉️ Admin: {reply_text}")
+        await message.answer(f"✅ Replied to {target_uid}")
+    except Exception:
+        await message.answer("Usage: /acctreply user_id your_message")
+
+
+@dp.message(Command("acct_admin"))
+async def acct_admin_command(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Unauthorized")
+        return
+    accounts_shop.acct_clear_state(message.from_user.id)
+    await message.answer(
+        "🔧 <b>Accounts Shop Admin Panel</b>\n\nSelect an option:",
+        reply_markup=accounts_shop.acct_admin_panel_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+# ===== ACCOUNTS SHOP - CALLBACK HANDLER ===== #
+@dp.callback_query(lambda c: c.data and (
+    c.data.startswith("acct_") or
+    c.data.startswith("acct_buy_") or
+    c.data.startswith("acct_otp_login_") or
+    c.data.startswith("acct_session_file_") or
+    c.data.startswith("acct_login_done_") or
+    c.data.startswith("acct_login_2fa_") or
+    c.data.startswith("acct_rate_") or
+    c.data.startswith("acct_config_tier_") or
+    c.data.startswith("acct_currency_") or
+    c.data.startswith("acct_oxapay_check_") or
+    c.data.startswith("acct_copy_ref_")
+))
+async def accounts_shop_callback(callback: types.CallbackQuery):
+    await accounts_shop.acct_handle_callback(callback)
+
+
+# ===== ACCOUNTS SHOP - BUTTON HANDLERS ===== #
+@dp.message(F.text == "📊 Acct Stats")
+async def acct_stats_btn(message: types.Message):
+    await accounts_shop.acct_show_stats(message)
+
+
+@dp.message(F.text == "💱 Acct Deposit")
+async def acct_deposit_btn(message: types.Message):
+    await accounts_shop.acct_deposit_menu(message)
+
+
+@dp.message(F.text == "💵 Acct Balance")
+async def acct_balance_btn(message: types.Message):
+    await accounts_shop.acct_show_balance(message)
+
+
+@dp.message(F.text == "🎁 Acct Referrals")
+async def acct_referrals_btn(message: types.Message):
+    await accounts_shop.acct_show_referrals(message)
+
+
+@dp.message(F.text == "💎 Acct Loyalty")
+async def acct_loyalty_btn(message: types.Message):
+    await accounts_shop.acct_show_loyalty(message)
+
+
+@dp.message(F.text == "🛟 Acct Support")
+async def acct_support_btn(message: types.Message):
+    await accounts_shop.acct_show_support(message)
+
+
+@dp.message(F.text == "📚 Acct How To Use")
+async def acct_how_to_use_btn(message: types.Message):
+    await accounts_shop.acct_show_user_manual(message)
+
+
+# ===== ACCOUNTS SHOP - STATE-BASED TEXT HANDLER ===== #
+from aiogram.filters import BaseFilter
+
+class HasAcctStateFilter(BaseFilter):
+    async def __call__(self, message: types.Message) -> bool:
+        return accounts_shop.acct_get_state(message.from_user.id) is not None
+
+
+@dp.message(HasAcctStateFilter(), F.text)
+async def accounts_shop_state_text_handler(message: types.Message):
+    await accounts_shop.acct_handle_text(message)
+
+
+@dp.message(HasAcctStateFilter(), F.photo | F.video | F.document)
+async def accounts_shop_state_media_handler(message: types.Message):
+    await accounts_shop.acct_handle_media(message)
+
 
 @dp.message(F.text == "⬅️ Back")
 async def back_handler(message: types.Message, state: FSMContext):
@@ -10871,6 +10990,22 @@ async def main():
         # Setup night mode automation scheduler
         print("🌙 Setting up Night Mode automation...")
         setup_night_mode_scheduler()
+
+        # ===== ACCOUNTS SHOP SETUP ===== #
+        print("🛒 Setting up Accounts Shop module...")
+        try:
+            accounts_shop.setup_accounts_shop(
+                bot=bot,
+                admin_id=ADMIN_ID,
+                api_id=API_ID,
+                api_hash=API_HASH,
+                mongo_url=MONGODB_URI,
+                oxapay_key=OXAPAY_API_KEY,
+                ngrok_url=public_url or ""
+            )
+            print("✅ Accounts Shop module initialized")
+        except Exception as e:
+            print(f"⚠️ Accounts Shop init warning: {e}")
 
         print("✅ Bot started successfully!")
         print(f"👤 Admin ID: {ADMIN_ID}")
