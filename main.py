@@ -21,6 +21,8 @@ from telethon.tl.types.auth import (
     SentCodeTypeFlashCall, SentCodeTypeMissedCall,
     SentCodeTypeEmailCode, SentCodeTypeFragmentSms,
     SentCodeTypeSmsWord, SentCodeTypeFirebaseSms,
+    CodeTypeSms, CodeTypeCall, CodeTypeFlashCall,
+    CodeTypeFragmentSms, CodeTypeMissedCall,
 )
 
 from telegram import (
@@ -76,7 +78,8 @@ _clients: dict[int, TelegramClient] = {}
 # ══════════════════════════════════════════════════════════════════════════════
 #  CODE-TYPE HELPER
 # ══════════════════════════════════════════════════════════════════════════════
-_CODE_TYPE_MAP = {
+# SentCodeType* — current delivery type (returned in sent.type)
+_SENT_CODE_TYPE_MAP = {
     SentCodeTypeSms:         ("SMS",          "📱"),
     SentCodeTypeApp:         ("Telegram App", "📲"),
     SentCodeTypeCall:        ("Phone Call",   "📞"),
@@ -88,15 +91,27 @@ _CODE_TYPE_MAP = {
     SentCodeTypeFirebaseSms: ("Firebase SMS", "🔥"),
 }
 
+# CodeType* — next available delivery type (returned in sent.next_type)
+_NEXT_CODE_TYPE_MAP = {
+    CodeTypeSms:         ("SMS",          "📱"),
+    CodeTypeCall:        ("Phone Call",   "📞"),
+    CodeTypeFlashCall:   ("Flash Call",   "⚡"),
+    CodeTypeFragmentSms: ("Fragment SMS", "🔗"),
+    CodeTypeMissedCall:  ("Missed Call",  "📳"),
+}
+
 def _code_type_info(t) -> tuple[str, str]:
-    """Return (label, icon) for a SentCodeType* object."""
-    for cls, (label, icon) in _CODE_TYPE_MAP.items():
+    """Return (label, icon) for any SentCodeType* or CodeType* object."""
+    for cls, info in {**_SENT_CODE_TYPE_MAP, **_NEXT_CODE_TYPE_MAP}.items():
         if isinstance(t, cls):
-            return label, icon
-    return (t.__class__.__name__.replace("SentCodeType", ""), "❓")
+            return info
+    name = t.__class__.__name__
+    for prefix in ("SentCodeType", "CodeType"):
+        name = name.replace(prefix, "")
+    return (name, "❓")
 
 def _otp_keyboard(sent) -> InlineKeyboardMarkup | None:
-    """Build inline keyboard with switch/resend buttons based on available types."""
+    """Build inline keyboard with resend/switch buttons."""
     rows = []
     next_type = getattr(sent, "next_type", None)
     if next_type:
@@ -105,7 +120,9 @@ def _otp_keyboard(sent) -> InlineKeyboardMarkup | None:
             f"{next_icon}  Switch to {next_label}",
             callback_data="resend_code"
         )])
-    return InlineKeyboardMarkup(rows) if rows else None
+    # Always show a plain resend button for current method
+    rows.append([InlineKeyboardButton("🔄  Resend Code", callback_data="resend_code")])
+    return InlineKeyboardMarkup(rows)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
