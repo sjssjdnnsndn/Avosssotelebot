@@ -39,9 +39,29 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN    = os.getenv("BOT_TOKEN", "")
 API_ID       = int(os.getenv("API_ID", "0"))
 API_HASH     = os.getenv("API_HASH", "")
-ALLOWED_ID   = int(os.getenv("ALLOWED_USER_ID", "0"))
 ACCOUNTS_DB  = "accounts.json"
 SESSIONS_DIR = "sessions"
+
+# ── Allowed users — read from ALLOWED_USER_IDS (10-digit chunks) ──────────────
+# Format: concatenate all 10-digit Telegram IDs back to back
+# Example: "12345678900987654321" → [1234567890, 987654321]  (two users)
+# Fallback: legacy single ALLOWED_USER_ID is also supported
+def _parse_allowed_ids() -> set[int]:
+    ids: set[int] = set()
+    raw = os.getenv("ALLOWED_USER_IDS", "").strip()
+    if raw:
+        for i in range(0, len(raw), 10):
+            chunk = raw[i:i+10].strip()
+            if chunk.isdigit():
+                ids.add(int(chunk))
+    # legacy fallback
+    legacy = os.getenv("ALLOWED_USER_ID", "0").strip()
+    if legacy.isdigit() and int(legacy) != 0:
+        ids.add(int(legacy))
+    return ids
+
+ALLOWED_IDS: set[int] = _parse_allowed_ids()
+logger.info(f"Allowed user IDs: {ALLOWED_IDS if ALLOWED_IDS else 'ALL (open access)'}")
 
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
@@ -153,10 +173,10 @@ WELCOME = (
 #  GUARDS
 # ══════════════════════════════════════════════════════════════════════════════
 def allowed(update: Update) -> bool:
-    if ALLOWED_ID == 0:
+    if not ALLOWED_IDS:
         return True
     uid = update.effective_user.id if update.effective_user else 0
-    return uid == ALLOWED_ID
+    return uid in ALLOWED_IDS
 
 async def deny(update: Update):
     target = update.message or (update.callback_query and update.callback_query.message)
