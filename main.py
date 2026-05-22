@@ -393,7 +393,7 @@ async def recv_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if isinstance(sent.type, SentCodeTypeApp):
             try:
                 resent = await client(ResendCodeRequest(
-                    phone=phone,
+                    phone_number=phone,
                     phone_code_hash=sent.phone_code_hash
                 ))
                 context.user_data["phone_code_hash"] = resent.phone_code_hash
@@ -521,7 +521,7 @@ async def cb_switch_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
 
     try:
-        resent = await client(ResendCodeRequest(phone=phone, phone_code_hash=old_hash))
+        resent = await client(ResendCodeRequest(phone_number=phone, phone_code_hash=old_hash))
         context.user_data["phone_code_hash"] = resent.phone_code_hash
 
         cur_label, cur_icon = _code_type_info(resent.type)
