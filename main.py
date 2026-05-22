@@ -16,6 +16,12 @@ from telethon.errors import (
 )
 from telethon.tl.functions.auth import ResendCodeRequest
 from telethon.tl.functions.account import UpdateProfileRequest
+from telethon.tl.types.auth import (
+    SentCodeTypeSms, SentCodeTypeApp, SentCodeTypeCall,
+    SentCodeTypeFlashCall, SentCodeTypeMissedCall,
+    SentCodeTypeEmailCode, SentCodeTypeFragmentSms,
+    SentCodeTypeSmsWord, SentCodeTypeFirebaseSms,
+)
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile,
@@ -45,6 +51,41 @@ os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 # ── Active Telethon clients per chat ──────────────────────────────────────────
 _clients: dict[int, TelegramClient] = {}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CODE-TYPE HELPER
+# ══════════════════════════════════════════════════════════════════════════════
+_CODE_TYPE_MAP = {
+    SentCodeTypeSms:         ("SMS",          "📱"),
+    SentCodeTypeApp:         ("Telegram App", "📲"),
+    SentCodeTypeCall:        ("Phone Call",   "📞"),
+    SentCodeTypeFlashCall:   ("Flash Call",   "⚡"),
+    SentCodeTypeMissedCall:  ("Missed Call",  "📳"),
+    SentCodeTypeEmailCode:   ("Email",        "📧"),
+    SentCodeTypeFragmentSms: ("Fragment SMS", "🔗"),
+    SentCodeTypeSmsWord:     ("SMS Word",     "🔤"),
+    SentCodeTypeFirebaseSms: ("Firebase SMS", "🔥"),
+}
+
+def _code_type_info(t) -> tuple[str, str]:
+    """Return (label, icon) for a SentCodeType* object."""
+    for cls, (label, icon) in _CODE_TYPE_MAP.items():
+        if isinstance(t, cls):
+            return label, icon
+    return (t.__class__.__name__.replace("SentCodeType", ""), "❓")
+
+def _otp_keyboard(sent) -> InlineKeyboardMarkup | None:
+    """Build inline keyboard with switch/resend buttons based on available types."""
+    rows = []
+    next_type = getattr(sent, "next_type", None)
+    if next_type:
+        next_label, next_icon = _code_type_info(next_type)
+        rows.append([InlineKeyboardButton(
+            f"{next_icon}  Switch to {next_label}",
+            callback_data="resend_code"
+        )])
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -264,7 +305,7 @@ async def recv_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return ASK_PHONE
 
-    await update.message.reply_text("⏳  Sending SMS OTP to your phone number…")
+    await update.message.reply_text("⏳  Requesting OTP from Telegram…")
 
     session_file = os.path.join(SESSIONS_DIR, f"session_{phone.replace('+','').replace(' ','')}")
     client = TelegramClient(session_file, API_ID, API_HASH)
@@ -274,20 +315,27 @@ async def recv_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     try:
         sent = await client.send_code_request(phone)
-        # Force SMS — resend immediately so delivery switches to SMS (not Telegram app / call)
-        try:
-            resent = await client(ResendCodeRequest(phone=phone, phone_code_hash=sent.phone_code_hash))
-            logger.info(f"Code resent via SMS for {phone}, new type: {resent.type.__class__.__name__}")
-        except Exception as resend_err:
-            logger.warning(f"ResendCode failed (continuing anyway): {resend_err}")
+        context.user_data["phone_code_hash"] = sent.phone_code_hash
+
+        cur_label, cur_icon = _code_type_info(sent.type)
+        next_type = getattr(sent, "next_type", None)
+        next_info = ""
+        if next_type:
+            nl, ni = _code_type_info(next_type)
+            next_info = f"\n📌  <b>Next available:</b> {ni} {nl}"
+
+        logger.info(f"Code sent to {phone} via {cur_label} | next: {next_type.__class__.__name__ if next_type else 'None'}")
 
         await update.message.reply_text(
-            "✅  <b>SMS OTP Sent Successfully!</b>\n\n"
+            "✅  <b>OTP Sent!</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "🔑  <b>STEP 2 of 5 — OTP Verification</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📱  Enter the OTP you received via <b>SMS</b> on your phone:",
+            f"📬  <b>Delivery method:</b>  {cur_icon}  <b>{cur_label}</b>"
+            f"{next_info}\n\n"
+            "Enter the OTP code below, or switch delivery method:",
             parse_mode="HTML",
+            reply_markup=_otp_keyboard(sent),
         )
         return ASK_OTP
 
@@ -372,6 +420,55 @@ async def recv_otp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             parse_mode="HTML",
         )
         return ConversationHandler.END
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STEP 2a — Resend / Switch OTP delivery method
+# ══════════════════════════════════════════════════════════════════════════════
+async def cb_resend_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query; await q.answer("🔄 Switching delivery method…")
+    if not allowed(update):
+        await deny(update); return ConversationHandler.END
+
+    chat_id = update.effective_chat.id
+    phone   = context.user_data.get("phone")
+    old_hash = context.user_data.get("phone_code_hash")
+    client: TelegramClient = _clients.get(chat_id)
+
+    if not client or not phone or not old_hash:
+        await q.edit_message_text("❌ Session expired. Type /start to restart.")
+        return ConversationHandler.END
+
+    try:
+        resent = await client(ResendCodeRequest(phone=phone, phone_code_hash=old_hash))
+        context.user_data["phone_code_hash"] = resent.phone_code_hash
+
+        cur_label, cur_icon = _code_type_info(resent.type)
+        next_type = getattr(resent, "next_type", None)
+        next_info = ""
+        if next_type:
+            nl, ni = _code_type_info(next_type)
+            next_info = f"\n📌  <b>Next available:</b> {ni} {nl}"
+
+        logger.info(f"Code resent to {phone} via {cur_label} | next: {next_type.__class__.__name__ if next_type else 'None'}")
+
+        await q.edit_message_text(
+            "🔄  <b>Code Resent!</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🔑  <b>STEP 2 of 5 — OTP Verification</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📬  <b>Delivery method:</b>  {cur_icon}  <b>{cur_label}</b>"
+            f"{next_info}\n\n"
+            "Enter the OTP code below, or switch delivery method:",
+            parse_mode="HTML",
+            reply_markup=_otp_keyboard(resent),
+        )
+        return ASK_OTP
+
+    except Exception as e:
+        logger.error(f"resend_code: {e}")
+        await q.answer(f"❌ Failed: {e}", show_alert=True)
+        return ASK_OTP
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -668,7 +765,10 @@ def main():
         ],
         states={
             ASK_PHONE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_phone)],
-            ASK_OTP:       [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_otp)],
+            ASK_OTP:       [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_otp),
+                CallbackQueryHandler(cb_resend_code, pattern="^resend_code$"),
+            ],
             ASK_EXIST_2FA: [MessageHandler(filters.TEXT & ~filters.COMMAND, recv_exist_2fa)],
             ASK_NEW_2FA:   [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_new_2fa),
