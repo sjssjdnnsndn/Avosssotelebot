@@ -5,7 +5,7 @@
 ╚══════════════════════════════════════════════════╝
 """
 
-import os, json, logging, asyncio, signal, atexit
+import os, json, logging, asyncio, signal, atexit, time
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -839,10 +839,27 @@ def _acquire_lock():
         try:
             old_pid = int(open(PID_FILE).read().strip())
             if old_pid != os.getpid():
-                os.kill(old_pid, signal.SIGTERM)
-                logger.info(f"Stopped old instance (PID {old_pid})")
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass  # process already gone
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    logger.info(f"Sent SIGTERM to old instance (PID {old_pid})")
+                    # Wait up to 3 seconds for graceful shutdown
+                    for _ in range(30):
+                        time.sleep(0.1)
+                        try:
+                            os.kill(old_pid, 0)  # check if still alive
+                        except ProcessLookupError:
+                            break
+                    else:
+                        # Force kill if still running
+                        try:
+                            os.kill(old_pid, signal.SIGKILL)
+                            logger.info(f"Force-killed old instance (PID {old_pid})")
+                        except ProcessLookupError:
+                            pass
+                except ProcessLookupError:
+                    pass
+        except (ValueError, PermissionError):
+            pass
         try:
             os.remove(PID_FILE)
         except OSError:
@@ -866,9 +883,7 @@ def _release_lock():
 # ══════════════════════════════════════════════════════════════════════════════
 #  LAUNCH
 # ══════════════════════════════════════════════════════════════════════════════
-def main():
-    _acquire_lock()
-
+async def _run_bot():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN missing in .env")
     if not API_ID or not API_HASH:
@@ -917,7 +932,31 @@ def main():
     app.add_handler(CallbackQueryHandler(cb_new_account,  pattern="^new_account$"))
 
     logger.info("🤖 Bot is running!  Press Ctrl+C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _handle_signal():
+        logger.info("Shutdown signal received.")
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _handle_signal)
+        except NotImplementedError:
+            pass  # Windows fallback
+
+    async with app:
+        await app.start()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await stop_event.wait()
+        await app.updater.stop()
+        await app.stop()
+
+
+def main():
+    _acquire_lock()
+    asyncio.run(_run_bot())
 
 
 if __name__ == "__main__":
