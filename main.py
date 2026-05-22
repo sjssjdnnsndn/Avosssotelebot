@@ -384,13 +384,28 @@ async def recv_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data["phone_code_hash"] = sent.phone_code_hash
 
         cur_label, cur_icon = _code_type_info(sent.type)
-        next_type = getattr(sent, "next_type", None)
-        next_info = ""
-        if next_type:
-            nl, ni = _code_type_info(next_type)
-            next_info = f"\n📌  <b>Next available:</b> {ni} {nl}"
+        logger.info(f"Initial code sent to {phone} via {cur_label}")
 
-        logger.info(f"Code sent to {phone} via {cur_label} | next: {next_type.__class__.__name__ if next_type else 'None'}")
+        # ── Auto-force SMS if code went to Telegram App ───────────────────────
+        # Telegram sends to App first when another device is logged in.
+        # We immediately ResendCodeRequest to cycle to SMS automatically.
+        sms_forced = False
+        if isinstance(sent.type, SentCodeTypeApp):
+            try:
+                resent = await client(ResendCodeRequest(
+                    phone=phone,
+                    phone_code_hash=sent.phone_code_hash
+                ))
+                context.user_data["phone_code_hash"] = resent.phone_code_hash
+                sent = resent          # use updated sent object for display
+                cur_label, cur_icon = _code_type_info(sent.type)
+                sms_forced = True
+                logger.info(f"Auto-switched to {cur_label} for {phone}")
+            except Exception as force_err:
+                logger.warning(f"Auto-SMS switch failed: {force_err}")
+        # ─────────────────────────────────────────────────────────────────────
+
+        forced_note = "\n⚡  <i>Auto-switched from Telegram App to SMS</i>" if sms_forced else ""
 
         await update.message.reply_text(
             "✅  <b>OTP Sent!</b>\n\n"
@@ -398,7 +413,7 @@ async def recv_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "🔑  <b>STEP 2 of 5 — OTP Verification</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📬  <b>Delivery method:</b>  {cur_icon}  <b>{cur_label}</b>"
-            f"{next_info}\n\n"
+            f"{forced_note}\n\n"
             "Enter the OTP code below, or switch delivery method:",
             parse_mode="HTML",
             reply_markup=_otp_keyboard(sent),
