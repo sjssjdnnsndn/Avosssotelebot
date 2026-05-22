@@ -5,7 +5,7 @@
 ╚══════════════════════════════════════════════════╝
 """
 
-import os, json, logging, asyncio
+import os, json, logging, asyncio, signal, atexit
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -613,9 +613,46 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  SINGLE-INSTANCE LOCK  (PID file)
+# ══════════════════════════════════════════════════════════════════════════════
+PID_FILE = "bot.pid"
+
+def _acquire_lock():
+    """Kill any previously running instance, then write our own PID."""
+    if os.path.exists(PID_FILE):
+        try:
+            old_pid = int(open(PID_FILE).read().strip())
+            if old_pid != os.getpid():
+                os.kill(old_pid, signal.SIGTERM)
+                logger.info(f"Stopped old instance (PID {old_pid})")
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # process already gone
+        try:
+            os.remove(PID_FILE)
+        except OSError:
+            pass
+
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+    atexit.register(_release_lock)
+
+def _release_lock():
+    try:
+        if os.path.exists(PID_FILE):
+            pid = int(open(PID_FILE).read().strip())
+            if pid == os.getpid():
+                os.remove(PID_FILE)
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  LAUNCH
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
+    _acquire_lock()
+
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN missing in .env")
     if not API_ID or not API_HASH:
