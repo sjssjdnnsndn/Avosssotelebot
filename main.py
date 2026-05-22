@@ -110,18 +110,47 @@ def _code_type_info(t) -> tuple[str, str]:
         name = name.replace(prefix, "")
     return (name, "❓")
 
-def _otp_keyboard(sent) -> InlineKeyboardMarkup | None:
+def _otp_keyboard(sent) -> InlineKeyboardMarkup:
     """Build inline keyboard with resend/switch buttons."""
-    rows = []
+    cur_type  = getattr(sent, "type", None)
     next_type = getattr(sent, "next_type", None)
+    cur_label, cur_icon = _code_type_info(cur_type) if cur_type else ("Code", "🔑")
+
+    rows = []
+
+    # Button 1 — switch to next_type if Telegram provided one
     if next_type:
-        next_label, next_icon = _code_type_info(next_type)
+        nl, ni = _code_type_info(next_type)
         rows.append([InlineKeyboardButton(
-            f"{next_icon}  Switch to {next_label}",
+            f"{ni}  Switch to {nl}",
             callback_data="resend_code"
         )])
-    # Always show a plain resend button for current method
-    rows.append([InlineKeyboardButton("🔄  Resend Code", callback_data="resend_code")])
+    else:
+        # Fallback: suggest the logical alternate method
+        if isinstance(cur_type, (SentCodeTypeSms, SentCodeTypeFragmentSms,
+                                  SentCodeTypeFirebaseSms, SentCodeTypeSmsWord)):
+            rows.append([InlineKeyboardButton(
+                "📞  Request via Phone Call",
+                callback_data="resend_code"
+            )])
+        elif isinstance(cur_type, SentCodeTypeApp):
+            rows.append([InlineKeyboardButton(
+                "📱  Switch to SMS",
+                callback_data="resend_code"
+            )])
+        elif isinstance(cur_type, (SentCodeTypeCall, SentCodeTypeFlashCall,
+                                    SentCodeTypeMissedCall)):
+            rows.append([InlineKeyboardButton(
+                "📱  Switch to SMS",
+                callback_data="resend_code"
+            )])
+
+    # Button 2 — always allow resend via same current method
+    rows.append([InlineKeyboardButton(
+        f"🔄  Resend via {cur_icon} {cur_label}",
+        callback_data="resend_code"
+    )])
+
     return InlineKeyboardMarkup(rows)
 
 
