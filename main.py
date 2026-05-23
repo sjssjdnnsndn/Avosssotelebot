@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import tempfile
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -747,6 +748,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
+async def _self_ping_loop() -> None:
+    """Ping the health-check server every 15 seconds to keep the bot alive."""
+    url = "http://localhost:5000"
+    while True:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: urllib.request.urlopen(url, timeout=5)
+            )
+            logger.debug("Self-ping OK")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Self-ping failed: %s", exc)
+        await asyncio.sleep(15)
+
+
 async def _post_init(app: Application) -> None:
     global BOT_USERNAME
     me = await app.bot.get_me()
@@ -759,6 +774,10 @@ async def _post_init(app: Application) -> None:
         await users_col.create_index("referred_by")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Index creation skipped: %s", exc)
+
+    # Start keep-alive self-ping in background
+    asyncio.create_task(_self_ping_loop())
+    logger.info("Self-ping loop started (every 15s)")
 
 
 def main() -> None:
