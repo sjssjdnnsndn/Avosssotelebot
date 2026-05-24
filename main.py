@@ -1,817 +1,1139 @@
-"""
-Instagram Video Downloader - Telegram Bot
-Features:
-- Download IG reels / posts / IGTV / photos via yt-dlp
-- Per-user 3 free downloads / 24h, extra via referral credits (+5 per invite)
-- Admin panel (stats + broadcast supporting text/photo/audio/photo+caption)
-"""
-from __future__ import annotations
-
 import asyncio
 import logging
 import os
 import re
-import shutil
-import tempfile
-import urllib.request
-from datetime import datetime, timedelta, timezone
+import random
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+import httpx
 from pathlib import Path
-
-from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaPhoto,
-    InputMediaVideo,
-    Update,
-)
-from telegram.constants import ChatAction, ParseMode
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
-import yt_dlp
+from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+from aiohttp import web
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
+# Load environment variables
+load_dotenv()
 
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-DAILY_FREE_LIMIT = int(os.environ.get("DAILY_FREE_LIMIT", "3"))
-REFERRAL_BONUS = int(os.environ.get("REFERRAL_BONUS", "5"))
-
-MAX_TG_FILE_BYTES = 50 * 1024 * 1024  # Telegram bot upload limit
-COOKIES_FILE = str(ROOT_DIR / "ig_cookies.txt")
-
+# Setup logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
-logger = logging.getLogger("ig_bot")
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
-mongo_client = AsyncIOMotorClient(MONGO_URL)
-db = mongo_client[DB_NAME]
-users_col = db["users"]
+# Configuration - Hardcoded (no environment variables needed)
+TELEGRAM_TOKEN = "8917741461:AAFX3f-4ooH-B_NTt7CHSEQWYQ69--hIEy4"  # Hardcoded token
+TERABOX_API_KEY = "pk_zdpl0l0zt3jyd6ijf7nkan"
+TERABOX_API_BASE = "https://api.playterabox.com/api/proxy"
+ADMIN_ID = 6812561508
+PORT = int(os.environ.get('PORT', 10000))  # Render default port
 
-BOT_USERNAME: str | None = None  # filled on startup
+# Auto-detect Render URL
+def get_render_url():
+    """Automatically detect Render public URL."""
+    # Method 1: Render automatically sets RENDER_EXTERNAL_URL
+    external_url = os.environ.get('RENDER_EXTERNAL_URL')
+    if external_url:
+        logger.info(f"✅ Auto-detected Render URL from RENDER_EXTERNAL_URL: {external_url}")
+        return external_url
+    
+    # Method 2: Manual RENDER_URL environment variable (fallback)
+    manual_url = os.environ.get('RENDER_URL')
+    if manual_url:
+        logger.info(f"✅ Using manually set RENDER_URL: {manual_url}")
+        return manual_url
+    
+    # Method 3: Construct from service name
+    service_name = os.environ.get('RENDER_SERVICE_NAME')
+    if service_name:
+        constructed_url = f"https://{service_name}.onrender.com"
+        logger.info(f"✅ Constructed Render URL from service name: {constructed_url}")
+        return constructed_url
+    
+    logger.warning("⚠️ Could not auto-detect Render URL. Self-ping will be skipped.")
+    return None
 
-WELCOME_MESSAGE = (
-    "🎬 *Instagram Video Downloader Bot* 🎬\n\n"
-    "🌟 *Welcome!*\n\n"
-    "Main aapke liye Instagram videos download kar sakta hoon! 📥\n\n"
-    "📝 *Kaise use karein:*\n"
-    "1️⃣ Mujhe Instagram video ka link bhejein\n"
-    "2️⃣ Main video download karunga\n"
-    "3️⃣ Aapko video send kar dunga! 🎉\n\n"
-    "💡 *Example:*\n"
-    "`https://www.instagram.com/reel/...`\n"
-    "`https://www.instagram.com/p/...`\n\n"
-    "✨ *Supported:*\n"
-    "✅ Instagram Reels\n"
-    "✅ Instagram Posts\n"
-    "✅ IGTV Videos\n"
-    "✅ Instagram Photos\n\n"
-    "_Simple hai! Just link bhejo aur magic dekho!_ ✨\n\n"
-    "⚠️ *Note:* Only public videos download ho sakti hain!\n\n"
-    "🎁 Har 24 ghante mein *3 free downloads* milte hain.\n"
-    "👥 Friends invite karke *+5 credits* per invite kamayein! /referral"
+RENDER_URL = get_render_url()
+
+# Download limits
+DAILY_LIMIT = 4
+REFERRAL_BONUS = 4
+RESET_HOURS = 24
+VIDEO_DELETE_AFTER_MINUTES = 30  # Auto-delete videos after 30 minutes
+
+# Conversation states
+BROADCAST_TYPE, BROADCAST_TEXT, BROADCAST_MEDIA = range(3)
+SUPPORT_MESSAGE, SUPPORT_CONFIRM = range(2)
+
+# MongoDB connection
+MONGO_URL = "mongodb+srv://sanjana928828_db_user:N4z0jLS17oXq4xrB@cluster0.gcwanr2.mongodb.net/?appName=Cluster0"
+client = AsyncIOMotorClient(MONGO_URL)
+db = client['terabox_bot']
+users_collection = db.users
+support_tickets_collection = db.support_tickets
+
+# Regex pattern to detect Terabox URLs
+TERABOX_URL_PATTERN = re.compile(
+    r'(https?://)?(www\.)?(terabox\.com|1024terabox\.com|teraboxapp\.com)/s/[a-zA-Z0-9_-]+',
+    re.IGNORECASE
 )
 
-HELP_MESSAGE = (
-    "ℹ️ *Help*\n\n"
-    "Sirf Instagram ka public link bhejein - reel, post, IGTV ya photo.\n\n"
-    "*Commands:*\n"
-    "/start - Welcome message\n"
-    "/help - Help\n"
-    "/me - Aapke downloads aur credits\n"
-    "/referral - Referral link\n"
-)
+async def get_or_create_user(user_id: int, username: str = None, referred_by: int = None):
+    """Get user from database or create new one."""
+    try:
+        user = await users_collection.find_one({"user_id": user_id})
 
-INSTAGRAM_URL_REGEX = re.compile(
-    r"https?://(?:www\.)?instagram\.com/(?:reel|reels|p|tv|share)/[^\s]+",
-    re.IGNORECASE,
-)
+        if not user:
+            # Create new user
+            user = {
+                "user_id": user_id,
+                "username": username,
+                "downloads_count": DAILY_LIMIT,
+                "downloads_used": 0,
+                "referrals_count": 0,
+                "referred_by": referred_by,
+                "last_reset": datetime.now(timezone.utc).isoformat(),
+                "joined_at": datetime.now(timezone.utc).isoformat()
+            }
+            await users_collection.insert_one(user)
 
-
-# ---------------------------------------------------------------------------
-# User helpers
-# ---------------------------------------------------------------------------
-async def ensure_user(tg_user, referred_by: int | None = None, bot=None) -> dict:
-    """Ensure user exists in DB. Returns the user document (without _id)."""
-    existing = await users_col.find_one({"user_id": tg_user.id}, {"_id": 0})
-    if existing:
-        return existing
-
-    doc = {
-        "user_id": tg_user.id,
-        "username": tg_user.username,
-        "first_name": tg_user.first_name,
-        "joined_at": datetime.now(timezone.utc).isoformat(),
-        "referred_by": referred_by if referred_by and referred_by != tg_user.id else None,
-        "credits": 0,
-        "downloads_success": 0,
-        "downloads_fail": 0,
-        "recent_downloads": [],
-        "referrals_count": 0,
-    }
-    await users_col.insert_one(dict(doc))
-
-    if doc["referred_by"]:
-        result = await users_col.update_one(
-            {"user_id": doc["referred_by"]},
-            {"$inc": {"credits": REFERRAL_BONUS, "referrals_count": 1}},
-        )
-        if result.matched_count and bot is not None:
-            try:
-                await bot.send_message(
-                    chat_id=doc["referred_by"],
-                    text=(
-                        f"🎉 *Naya referral!*\n\n"
-                        f"{tg_user.first_name or 'Koi'} aapke link se join hua.\n"
-                        f"💰 +{REFERRAL_BONUS} credits add ho gaye!"
-                    ),
-                    parse_mode=ParseMode.MARKDOWN,
+            # If referred by someone, give them bonus
+            if referred_by:
+                await users_collection.update_one(
+                    {"user_id": referred_by},
+                    {
+                        "$inc": {
+                            "referrals_count": 1,
+                            "downloads_count": REFERRAL_BONUS
+                        }
+                    }
                 )
-            except Exception:
-                pass
-    return doc
+                logger.info(f"User {referred_by} got {REFERRAL_BONUS} bonus downloads for referring {user_id}")
 
+        return user
+    except Exception as e:
+        logger.error(f"Error in get_or_create_user: {e}")
+        return None
 
-async def get_quota(user_id: int) -> tuple[int, int, int]:
-    """Return (used_today, free_remaining, credits)."""
-    user = await users_col.find_one({"user_id": user_id}, {"_id": 0})
-    if not user:
-        return 0, DAILY_FREE_LIMIT, 0
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    recent = [t for t in (user.get("recent_downloads") or []) if datetime.fromisoformat(t) > cutoff]
-    used = len(recent)
-    free_remaining = max(0, DAILY_FREE_LIMIT - used)
-    return used, free_remaining, user.get("credits", 0)
+async def check_and_reset_limit(user_id: int):
+    """Check if 24 hours passed and reset limit if needed."""
+    try:
+        user = await users_collection.find_one({"user_id": user_id})
 
+        if not user:
+            return
 
-async def try_consume_quota(user_id: int) -> tuple[bool, str]:
-    """Try to consume one download. Returns (allowed, source) where source is 'free' or 'credit'."""
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=24)
-    user = await users_col.find_one({"user_id": user_id}, {"_id": 0})
-    if not user:
-        return False, ""
-    recent = [t for t in (user.get("recent_downloads") or []) if datetime.fromisoformat(t) > cutoff]
-    if len(recent) < DAILY_FREE_LIMIT:
-        recent.append(now.isoformat())
-        await users_col.update_one(
-            {"user_id": user_id}, {"$set": {"recent_downloads": recent}}
-        )
-        return True, "free"
-    if user.get("credits", 0) > 0:
-        await users_col.update_one({"user_id": user_id}, {"$inc": {"credits": -1}})
-        return True, "credit"
-    return False, ""
+        last_reset = datetime.fromisoformat(user["last_reset"])
+        now = datetime.now(timezone.utc)
 
-
-def referral_link(user_id: int) -> str:
-    uname = BOT_USERNAME or "this_bot"
-    return f"https://t.me/{uname}?start=ref_{user_id}"
-
-
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    referrer = None
-    if context.args:
-        arg = context.args[0]
-        if arg.startswith("ref_"):
-            try:
-                referrer = int(arg[4:])
-            except ValueError:
-                pass
-    await ensure_user(update.effective_user, referred_by=referrer, bot=context.bot)
-    await update.message.reply_text(
-        WELCOME_MESSAGE,
-        parse_mode=ParseMode.MARKDOWN,
-        disable_web_page_preview=True,
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await ensure_user(update.effective_user, bot=context.bot)
-    await update.message.reply_text(HELP_MESSAGE, parse_mode=ParseMode.MARKDOWN)
-
-
-async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    await ensure_user(user, bot=context.bot)
-    used, free_left, credits = await get_quota(user.id)
-    doc = await users_col.find_one({"user_id": user.id}, {"_id": 0}) or {}
-    text = (
-        f"👤 *Aapka Account*\n\n"
-        f"🆔 ID: `{user.id}`\n"
-        f"📥 Last 24h downloads: *{used}/{DAILY_FREE_LIMIT}*\n"
-        f"🆓 Free remaining: *{free_left}*\n"
-        f"💰 Credits: *{credits}*\n"
-        f"👥 Total referrals: *{doc.get('referrals_count', 0)}*\n"
-        f"✅ Successful: *{doc.get('downloads_success', 0)}*\n"
-        f"❌ Failed: *{doc.get('downloads_fail', 0)}*\n\n"
-        f"🔗 Aapka referral link:\n`{referral_link(user.id)}`"
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
-
-
-async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    await ensure_user(user, bot=context.bot)
-    doc = await users_col.find_one({"user_id": user.id}, {"_id": 0}) or {}
-    link = referral_link(user.id)
-    text = (
-        f"🎁 *Referral Program*\n\n"
-        f"Har naye user ke join hone par aapko *+{REFERRAL_BONUS} credits* milte hain!\n"
-        f"1 credit = 1 extra download (24h limit ke baad bhi).\n\n"
-        f"👥 Total referrals: *{doc.get('referrals_count', 0)}*\n"
-        f"💰 Current credits: *{doc.get('credits', 0)}*\n\n"
-        f"🔗 *Aapka link:*\n`{link}`\n\n"
-        f"_Share karein aur unlimited downloads pao!_"
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
-
-
-# ---------------------------------------------------------------------------
-# Admin
-# ---------------------------------------------------------------------------
-def admin_keyboard() -> InlineKeyboardMarkup:
-    cookie_label = "🍪 Cookies: ✅" if _cookies_present() else "🍪 Set Cookies"
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📊 Stats", callback_data="admin:stats")],
-            [InlineKeyboardButton("📢 Broadcast", callback_data="admin:broadcast")],
-            [InlineKeyboardButton(cookie_label, callback_data="admin:cookies")],
-            [InlineKeyboardButton("❌ Close", callback_data="admin:close")],
-        ]
-    )
-
-
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Aap admin nahi hain.")
-        return
-    await update.message.reply_text("👑 *Admin Panel*", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
-
-
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    cleared = []
-    if context.user_data.pop("awaiting_broadcast", False):
-        cleared.append("broadcast")
-    if context.user_data.pop("awaiting_cookie", False):
-        cleared.append("cookie")
-    if cleared:
-        await update.message.reply_text(f"❌ Cancelled: {', '.join(cleared)}")
-    else:
-        await update.message.reply_text("Kuch pending nahi tha.")
-
-
-async def setcookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Aap admin nahi hain.")
-        return
-    context.user_data["awaiting_cookie"] = True
-    await update.message.reply_text(
-        "🍪 *Instagram Cookies Setup*\n\n"
-        "Apne browser se Instagram cookies copy karke yahan paste karen.\n\n"
-        "*Easy method:*\n"
-        "1️⃣ Chrome/Firefox extension install karen: *Get cookies.txt LOCALLY* (free)\n"
-        "2️⃣ instagram.com par login karen\n"
-        "3️⃣ Extension kholen → Export cookies\n"
-        "4️⃣ `sessionid`, `ds_user_id`, `csrftoken` values copy karen\n\n"
-        "*Format:*\n"
-        "`sessionid=ABCDxyz; ds_user_id=12345; csrftoken=XYZ`\n\n"
-        "_Sirf sessionid bhejen to bhi chalega._\n\n"
-        "⚠️ Ye cookies safe rahengi (sirf bot ke pas), kabhi share nahi hongi.\n"
-        "Cancel: /cancel",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-
-async def cookiestatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if _cookies_present():
-        try:
-            with open(COOKIES_FILE) as f:
-                content = f.read()
-            names = re.findall(r"\t([a-z_]+)\t[^\t\n]+$", content, re.MULTILINE)
-            await update.message.reply_text(
-                f"🍪 Cookies set: ✅\nKeys: `{', '.join(names) or 'unknown'}`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception:
-            await update.message.reply_text("🍪 Cookies file present but unreadable.")
-    else:
-        await update.message.reply_text("🍪 Koi cookies set nahi hain. /setcookie use karen.")
-
-
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    if q.from_user.id != ADMIN_ID:
-        await q.answer("Not allowed", show_alert=True)
-        return
-    await q.answer()
-    action = q.data.split(":", 1)[1]
-
-    if action == "stats":
-        total_users = await users_col.count_documents({})
-        agg = await users_col.aggregate(
-            [
+        # Check if 24 hours passed
+        if now - last_reset >= timedelta(hours=RESET_HOURS):
+            await users_collection.update_one(
+                {"user_id": user_id},
                 {
-                    "$group": {
-                        "_id": None,
-                        "success": {"$sum": "$downloads_success"},
-                        "fail": {"$sum": "$downloads_fail"},
-                        "credits": {"$sum": "$credits"},
-                        "refs": {"$sum": "$referrals_count"},
+                    "$set": {
+                        "downloads_count": DAILY_LIMIT,
+                        "downloads_used": 0,
+                        "last_reset": now.isoformat()
                     }
                 }
-            ]
-        ).to_list(1)
-        s = agg[0] if agg else {"success": 0, "fail": 0, "credits": 0, "refs": 0}
-        active_24h = await users_col.count_documents(
-            {"recent_downloads.0": {"$exists": True}}
+            )
+            logger.info(f"Reset limit for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error in check_and_reset_limit: {e}")
+
+async def get_remaining_downloads(user_id: int) -> int:
+    """Get remaining downloads for user."""
+    try:
+        await check_and_reset_limit(user_id)
+        user = await users_collection.find_one({"user_id": user_id})
+
+        if not user:
+            return DAILY_LIMIT
+
+        total_available = user.get("downloads_count", DAILY_LIMIT)
+        used = user.get("downloads_used", 0)
+        return max(0, total_available - used)
+    except Exception as e:
+        logger.error(f"Error in get_remaining_downloads: {e}")
+        return 0
+
+async def use_download(user_id: int):
+    """Increment downloads used count."""
+    try:
+        await users_collection.update_one(
+            {"user_id": user_id},
+            {"$inc": {"downloads_used": 1}}
         )
-        text = (
-            "📊 *Bot Statistics*\n\n"
-            f"👥 Total Users: *{total_users}*\n"
-            f"🟢 Active (24h): *{active_24h}*\n"
-            f"✅ Successful Downloads: *{s.get('success', 0)}*\n"
-            f"❌ Failed Downloads: *{s.get('fail', 0)}*\n"
-            f"💰 Total Credits in circulation: *{s.get('credits', 0)}*\n"
-            f"🔗 Total Referrals: *{s.get('refs', 0)}*\n"
+    except Exception as e:
+        logger.error(f"Error in use_download: {e}")
+
+async def get_time_until_reset(user_id: int) -> str:
+    """Get time remaining until limit reset."""
+    try:
+        user = await users_collection.find_one({"user_id": user_id})
+
+        if not user:
+            return "24 hours"
+
+        last_reset = datetime.fromisoformat(user["last_reset"])
+        reset_time = last_reset + timedelta(hours=RESET_HOURS)
+        now = datetime.now(timezone.utc)
+
+        time_left = reset_time - now
+        hours = int(time_left.total_seconds() // 3600)
+        minutes = int((time_left.total_seconds() % 3600) // 60)
+
+        return f"{hours}h {minutes}m"
+    except Exception as e:
+        logger.error(f"Error in get_time_until_reset: {e}")
+        return "Unknown"
+
+async def schedule_video_deletion(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int):
+    """Schedule video deletion after specified time."""
+    try:
+        await asyncio.sleep(VIDEO_DELETE_AFTER_MINUTES * 60)  # Convert minutes to seconds
+
+        # Try to delete the video message
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+
+        # Send notification about deletion
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ Video deleted after {VIDEO_DELETE_AFTER_MINUTES} minutes due to copyright compliance.\n\n"
+                 f"💡 Tip: Save videos immediately after receiving them!"
         )
-        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=admin_keyboard())
+        logger.info(f"Auto-deleted video message {message_id} from chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Failed to auto-delete video message {message_id}: {e}")
 
-    elif action == "broadcast":
-        context.user_data["awaiting_broadcast"] = True
-        await q.edit_message_text(
-            "📢 *Broadcast Mode*\n\n"
-            "Ab jo bhi message bhejenge wo *sabhi users* ko forward ho jayega.\n\n"
-            "Supported: text, photo, photo+caption, audio, voice, video, document\n\n"
-            "Cancel: /cancel",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+def get_main_keyboard():
+    """Create main menu keyboard."""
+    keyboard = [
+        [InlineKeyboardButton("📊 Status", callback_data="status")],
+        [InlineKeyboardButton("🎁 Refer & Earn", callback_data="refer")],
+        [InlineKeyboardButton("💬 Support", callback_data="support")],
+        [InlineKeyboardButton("❓ Help", callback_data="help")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-    elif action == "cookies":
-        context.user_data["awaiting_cookie"] = True
-        await q.edit_message_text(
-            "🍪 *Instagram Cookies Setup*\n\n"
-            "Apne browser se cookies copy karke yahan paste karen.\n\n"
-            "*Steps:*\n"
-            "1️⃣ Chrome extension install karen: *Get cookies.txt LOCALLY*\n"
-            "2️⃣ instagram.com par login karen\n"
-            "3️⃣ Extension se cookies export karen\n"
-            "4️⃣ `sessionid`, `ds_user_id`, `csrftoken` copy karen\n\n"
-            "*Paste format:*\n"
-            "`sessionid=ABCxyz; ds_user_id=12345; csrftoken=ABCxyz`\n\n"
-            "_Sirf sessionid bhejen to bhi chalega._\n\n"
-            "Cancel: /cancel",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+def get_admin_keyboard():
+    """Create admin panel keyboard."""
+    keyboard = [
+        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📊 Bot Stats", callback_data="admin_stats")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-    elif action == "close":
-        await q.edit_message_text("👑 Admin panel closed.")
+def get_broadcast_keyboard():
+    """Create broadcast type selection keyboard."""
+    keyboard = [
+        [InlineKeyboardButton("📝 Text Only", callback_data="broadcast_text")],
+        [InlineKeyboardButton("🖼️ Image + Text", callback_data="broadcast_image")],
+        [InlineKeyboardButton("🎥 Video + Text", callback_data="broadcast_video")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /start is issued."""
+    try:
+        user_id = update.effective_user.id
+        username = update.effective_user.username
 
-async def do_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Forward whatever message admin just sent to all known users using copy_message."""
-    context.user_data["awaiting_broadcast"] = False
-    src_chat = update.effective_chat.id
-    src_msg = update.message.message_id
-
-    cursor = users_col.find({}, {"user_id": 1, "_id": 0})
-    user_ids: list[int] = [u["user_id"] async for u in cursor]
-    total = len(user_ids)
-
-    status = await update.message.reply_text(f"📤 Broadcasting to {total} users…")
-    sent = failed = 0
-
-    for idx, uid in enumerate(user_ids, start=1):
-        try:
-            await context.bot.copy_message(chat_id=uid, from_chat_id=src_chat, message_id=src_msg)
-            sent += 1
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            logger.info("Broadcast skip %s: %s", uid, exc)
-        # rate-limit: ~25 msg/sec to be safe
-        await asyncio.sleep(0.04)
-        if idx % 25 == 0:
+        # Check if user came via referral link
+        referred_by = None
+        if context.args:
             try:
-                await status.edit_text(f"📤 Broadcasting… {idx}/{total}\n✅ {sent} | ❌ {failed}")
-            except Exception:
+                referred_by = int(context.args[0])
+                if referred_by == user_id:
+                    referred_by = None  # Can't refer yourself
+            except ValueError:
                 pass
 
-    await status.edit_text(
-        f"✅ *Broadcast complete*\n\n"
-        f"Total: {total}\n✅ Sent: {sent}\n❌ Failed: {failed}",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+        # Get or create user
+        user = await get_or_create_user(user_id, username, referred_by)
 
-
-# ---------------------------------------------------------------------------
-# Download flow
-# ---------------------------------------------------------------------------
-def _write_cookies(raw: str) -> int:
-    """Parse 'key=value; key=value' style cookie string and write Netscape cookies.txt.
-    Returns number of cookies written."""
-    pairs: dict[str, str] = {}
-    for chunk in re.split(r"[;\n]", raw.strip()):
-        if "=" in chunk:
-            k, v = chunk.split("=", 1)
-            k, v = k.strip(), v.strip().strip('"')
-            if k and v:
-                pairs[k] = v
-    if not pairs:
-        return 0
-    expiry = int((datetime.now(timezone.utc) + timedelta(days=365)).timestamp())
-    lines = ["# Netscape HTTP Cookie File"]
-    for k, v in pairs.items():
-        # domain, includeSubdomains, path, secure, expiry, name, value
-        lines.append(f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\t{k}\t{v}")
-    with open(COOKIES_FILE, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    os.chmod(COOKIES_FILE, 0o600)
-    return len(pairs)
-
-
-def _cookies_present() -> bool:
-    return os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 50
-
-
-def _download_with_ytdlp(url: str, out_dir: str) -> list[str]:
-    outtmpl = os.path.join(out_dir, "%(id)s_%(autonumber)s.%(ext)s")
-    ydl_opts: dict = {
-        "outtmpl": outtmpl,
-        "format": "best[ext=mp4]/best",
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": False,
-        "retries": 5,
-        "fragment_retries": 5,
-        "socket_timeout": 30,
-        "concurrent_fragment_downloads": 4,
-        "merge_output_format": "mp4",
-        "extractor_retries": 3,
-        "sleep_interval_requests": 1,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
-                "Mobile/15E148 Safari/604.1"
-            ),
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "X-IG-App-ID": "936619743392459",
-            "X-ASBD-ID": "129477",
-            "X-IG-WWW-Claim": "0",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-            "Origin": "https://www.instagram.com",
-            "Referer": "https://www.instagram.com/",
-        },
-    }
-    if _cookies_present():
-        ydl_opts["cookiefile"] = COOKIES_FILE
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-
-    files: list[str] = []
-    if info is None:
-        return files
-    entries = info.get("entries") if info.get("_type") == "playlist" else [info]
-    for entry in entries:
-        if not entry:
-            continue
-        fp = entry.get("filepath") or entry.get("_filename")
-        if not fp:
-            rds = entry.get("requested_downloads") or []
-            if rds:
-                fp = rds[0].get("filepath") or rds[0].get("_filename")
-        if fp and os.path.exists(fp):
-            files.append(fp)
-    if not files:
-        for name in sorted(os.listdir(out_dir)):
-            p = os.path.join(out_dir, name)
-            if os.path.isfile(p):
-                files.append(p)
-    return files
-
-
-async def process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    allowed, source = await try_consume_quota(user_id)
-    if not allowed:
-        link = referral_link(user_id)
-        await update.message.reply_text(
-            f"🚫 *Limit reached!*\n\n"
-            f"Aapke 24-hour mein {DAILY_FREE_LIMIT} free downloads khatam ho gaye "
-            f"aur koi credits nahi hain.\n\n"
-            f"🎁 Friends invite karen — har join pe *+{REFERRAL_BONUS} credits*:\n"
-            f"`{link}`\n\n"
-            f"_Ya 24h baad dobara try karen._",
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True,
-        )
-        return
-
-    status_msg = await update.message.reply_text("⏳ Download ho raha hai…")
-    tmp_dir = tempfile.mkdtemp(prefix="igdl_", dir="/tmp")
-
-    try:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
-        try:
-            files = await asyncio.to_thread(_download_with_ytdlp, url, tmp_dir)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("yt-dlp error: %s", e)
-            await refund_and_count_fail(user_id, source)
-            err = str(e).lower()
-            if "login" in err or "private" in err or "rate-limit" in err or "rate limit" in err or "429" in err:
-                if user_id == ADMIN_ID and not _cookies_present():
-                    msg = (
-                        "🔒 *Instagram ne is server ka IP block kar diya hai* (rate-limit).\n\n"
-                        "Public endpoint bina login ke ab kaam nahi karta.\n"
-                        "Solution: /setcookie command se apne Instagram cookies ek baar set karen.\n"
-                        "Phir bot reliably kaam karega."
-                    )
-                elif _cookies_present():
-                    msg = (
-                        "🔒 Cookies set hain par fir bhi block ho raha hai.\n"
-                        "Cookies expire ho gayi ho sakti hain — /setcookie se fresh cookies do."
-                    )
-                else:
-                    msg = (
-                        "🔒 Abhi server par rate-limit hit ho gaya. "
-                        "Admin ko notify kar diya gaya hai, thodi der baad try karen."
-                    )
-            elif "not available" in err or "404" in err:
-                msg = "⚠️ Content unavailable ya delete ho gaya hai."
-            else:
-                msg = "⚠️ Download fail ho gaya. Link check karen ya thodi der baad try karen."
-            await status_msg.edit_text(msg, parse_mode=ParseMode.MARKDOWN)
+        if not user:
+            await update.message.reply_text("⚠️ Database error. Please try again later.")
             return
 
-        if not files:
-            await refund_and_count_fail(user_id, source)
-            await status_msg.edit_text("⚠️ Koi media nahi mila is link mein.")
-            return
+        is_new_user = user.get("downloads_used", 0) == 0 and user.get("referrals_count", 0) == 0
 
-        sendable: list[str] = []
-        for f in files:
-            try:
-                size = os.path.getsize(f)
-            except OSError:
-                continue
-            if size > MAX_TG_FILE_BYTES:
-                await update.message.reply_text(
-                    f"⚠️ `{os.path.basename(f)}` 50MB se badi hai (Telegram limit), skip.",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                continue
-            sendable.append(f)
+        if referred_by and is_new_user:
+            welcome_message = f"""
+🎉 Welcome to Terabox Downloader Bot!
 
-        if not sendable:
-            await refund_and_count_fail(user_id, source)
-            await status_msg.edit_text("⚠️ Sabhi files 50MB se badi hain (Telegram bot limit).")
-            return
+You joined via referral!
+Your friend got {REFERRAL_BONUS} bonus downloads! 🎁
 
-        await status_msg.edit_text("📤 Upload ho raha hai…")
+🔥 You can download {DAILY_LIMIT} videos/images every 24 hours!
 
-        media_items: list[tuple[str, str]] = []
-        for f in sendable:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in {".mp4", ".mov", ".mkv", ".webm"}:
-                media_items.append(("video", f))
-            elif ext in {".jpg", ".jpeg", ".png", ".webp"}:
-                media_items.append(("photo", f))
-            else:
-                media_items.append(("doc", f))
+Supported formats:
+📹 Videos (all qualities)
+🖼️ Images
 
-        used, free_left, credits = await get_quota(user_id)
-        footer_caption = (
-            "✅ Ye lijiye!\n"
-            f"📊 Today: {used}/{DAILY_FREE_LIMIT} | 💰 Credits: {credits}"
-        )
-
-        i = 0
-        while i < len(media_items):
-            chunk = media_items[i : i + 10]
-            i += 10
-            if len(chunk) == 1:
-                kind, path = chunk[0]
-                with open(path, "rb") as fh:
-                    if kind == "video":
-                        await context.bot.send_video(
-                            chat_id=chat_id, video=fh, caption=footer_caption,
-                            supports_streaming=True, read_timeout=180, write_timeout=180,
-                        )
-                    elif kind == "photo":
-                        await context.bot.send_photo(
-                            chat_id=chat_id, photo=fh, caption=footer_caption,
-                            read_timeout=120, write_timeout=120,
-                        )
-                    else:
-                        await context.bot.send_document(
-                            chat_id=chat_id, document=fh, caption=footer_caption,
-                            read_timeout=180, write_timeout=180,
-                        )
-            else:
-                media_group = []
-                opened = []
-                try:
-                    for idx, (kind, path) in enumerate(chunk):
-                        fh = open(path, "rb")
-                        opened.append(fh)
-                        cap = footer_caption if idx == 0 else None
-                        if kind == "video":
-                            media_group.append(InputMediaVideo(media=fh, caption=cap))
-                        elif kind == "photo":
-                            media_group.append(InputMediaPhoto(media=fh, caption=cap))
-                        else:
-                            await context.bot.send_document(chat_id=chat_id, document=fh)
-                    if media_group:
-                        await context.bot.send_media_group(
-                            chat_id=chat_id, media=media_group,
-                            read_timeout=240, write_timeout=240,
-                        )
-                finally:
-                    for fh in opened:
-                        try:
-                            fh.close()
-                        except Exception:
-                            pass
-
-        await users_col.update_one({"user_id": user_id}, {"$inc": {"downloads_success": 1}})
-
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
-
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-async def refund_and_count_fail(user_id: int, source: str) -> None:
-    """Refund quota on failed download and bump fail counter."""
-    update_doc: dict = {"$inc": {"downloads_fail": 1}}
-    if source == "credit":
-        update_doc["$inc"]["credits"] = 1
-    await users_col.update_one({"user_id": user_id}, update_doc)
-    if source == "free":
-        # remove most recent timestamp from recent_downloads
-        user = await users_col.find_one({"user_id": user_id}, {"_id": 0, "recent_downloads": 1})
-        if user and user.get("recent_downloads"):
-            recent = user["recent_downloads"][:-1]
-            await users_col.update_one({"user_id": user_id}, {"$set": {"recent_downloads": recent}})
-
-
-# ---------------------------------------------------------------------------
-# Master message handler
-# ---------------------------------------------------------------------------
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None:
-        return
-
-    user = update.effective_user
-    await ensure_user(user, bot=context.bot)
-
-    # Admin broadcast capture
-    if user.id == ADMIN_ID and context.user_data.get("awaiting_broadcast"):
-        await do_broadcast(update, context)
-        return
-
-    # Admin cookie capture
-    if user.id == ADMIN_ID and context.user_data.get("awaiting_cookie"):
-        context.user_data["awaiting_cookie"] = False
-        raw = (update.message.text or "").strip()
-        # Delete the cookie message for security
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-        n = _write_cookies(raw)
-        if n == 0:
-            await context.bot.send_message(
-                user.id,
-                "❌ Cookies parse nahi ho paayin. `key=value; key=value` format mein bhejen.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+Just send me a Terabox link! ✨
+            """
         else:
-            await context.bot.send_message(
-                user.id,
-                f"✅ {n} cookies save ho gayin! Ab downloads chalu honi chahiye.\n\n"
-                f"(Original message security ke liye delete kar diya.)",
-            )
-        return
+            welcome_message = f"""
+👋 Welcome to Terabox Downloader Bot!
 
-    text = update.message.text or update.message.caption or ""
-    match = INSTAGRAM_URL_REGEX.search(text)
-    if not match:
-        if update.message.text:
+🔥 You can download {DAILY_LIMIT} videos/images every 24 hours!
+
+Want more? Invite friends!
+Each referral gives you {REFERRAL_BONUS} more downloads! 🎁
+
+Supported formats:
+📹 Videos (all qualities)
+🖼️ Images
+
+Just send me a Terabox link! ✨
+            """
+
+        await update.message.reply_text(welcome_message, reply_markup=get_main_keyboard())
+    except Exception as e:
+        logger.error(f"Error in start command: {e}")
+        await update.message.reply_text("⚠️ An error occurred. Please try again.")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button callbacks."""
+    try:
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+
+        if query.data == "main_menu":
+            await query.edit_message_text(
+                "🏠 Main Menu\nChoose an option below:",
+                reply_markup=get_main_keyboard()
+            )
+
+        elif query.data == "status":
+            await get_or_create_user(user_id, update.effective_user.username)
+            remaining = await get_remaining_downloads(user_id)
+            user = await users_collection.find_one({"user_id": user_id})
+            referrals = user.get("referrals_count", 0) if user else 0
+
+            if remaining > 0:
+                status_text = f"""
+📊 Your Status:
+
+✅ Downloads Remaining: {remaining}
+👥 Total Referrals: {referrals}
+
+💡 Invite friends to get more downloads!
+                """
+            else:
+                time_left = await get_time_until_reset(user_id)
+                status_text = f"""
+📊 Your Status:
+
+❌ Downloads Remaining: 0
+⏰ Limit resets in: {time_left}
+👥 Total Referrals: {referrals}
+
+💡 Invite 1 friend to get {REFERRAL_BONUS} more downloads!
+                """
+
+            await query.edit_message_text(status_text, reply_markup=get_main_keyboard())
+
+        elif query.data == "refer":
+            bot_username = context.bot.username
+            user = await get_or_create_user(user_id, update.effective_user.username)
+            if not user:
+                await query.edit_message_text("⚠️ Database error. Please try again later.")
+                return
+            
+            referral_link = f"https://t.me/{bot_username}?start={user_id}"
+            referrals_count = user.get("referrals_count", 0)
+
+            refer_text = f"""
+🎁 Your Referral Link:
+
+{referral_link}
+
+📊 Stats:
+• Total Referrals: {referrals_count}
+• Bonus Earned: {referrals_count * REFERRAL_BONUS} downloads
+
+💰 Get {REFERRAL_BONUS} downloads per referral!
+
+Share this link with friends! 🚀
+            """
+            await query.edit_message_text(refer_text, reply_markup=get_main_keyboard())
+
+        elif query.data == "help":
+            help_text = f"""
+🤖 How to use this bot:
+
+1️⃣ Copy any Terabox link
+2️⃣ Send it to me
+3️⃣ Receive your video/image!
+
+📊 Download Limits:
+• {DAILY_LIMIT} downloads per 24 hours
+• Invite friends for {REFERRAL_BONUS} more downloads per referral!
+
+⚠️ Important:
+• Videos are auto-deleted after {VIDEO_DELETE_AFTER_MINUTES} minutes due to copyright compliance
+• Save videos immediately after receiving!
+
+Example links:
+• https://terabox.com/s/xxxxxx
+• https://1024terabox.com/s/xxxxxx
+
+Note: Only videos and images are supported.
+            """
+            await query.edit_message_text(help_text, reply_markup=get_main_keyboard())
+
+        elif query.data == "support":
+            # Start support ticket conversation
+            support_text = """
+💬 Support
+
+Please describe your issue or query related to promotions on our bot.
+
+Type your message below:
+            """
+            await query.edit_message_text(support_text)
+            context.user_data['awaiting_support_message'] = True
+
+        # Admin commands
+        elif query.data == "admin_panel" and user_id == ADMIN_ID:
+            await query.edit_message_text(
+                "👨‍💼 Admin Panel\nChoose an option:",
+                reply_markup=get_admin_keyboard()
+            )
+
+        elif query.data == "admin_broadcast" and user_id == ADMIN_ID:
+            await query.edit_message_text(
+                "📢 Select broadcast type:",
+                reply_markup=get_broadcast_keyboard()
+            )
+
+        elif query.data == "admin_stats" and user_id == ADMIN_ID:
+            total_users = await users_collection.count_documents({})
+            total_downloads = await users_collection.aggregate([
+                {"$group": {"_id": None, "total": {"$sum": "$downloads_used"}}}
+            ]).to_list(1)
+            total_dl = total_downloads[0]['total'] if total_downloads else 0
+
+            stats_text = f"""
+📊 Bot Statistics:
+
+👥 Total Users: {total_users}
+🔥 Total Downloads: {total_dl}
+🎁 Active Referrals: {await users_collection.count_documents({"referrals_count": {"$gt": 0}})}
+            """
+            await query.edit_message_text(stats_text, reply_markup=get_admin_keyboard())
+
+    except Exception as e:
+        logger.error(f"Error in button_handler: {e}")
+        try:
+            await query.edit_message_text("⚠️ An error occurred. Please try again.")
+        except:
+            pass
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin panel command."""
+    try:
+        user_id = update.effective_user.id
+
+        if user_id != ADMIN_ID:
+            await update.message.reply_text("⛔ You don't have permission to access admin panel.")
+            return
+
+        await update.message.reply_text(
+            "👨‍💼 Admin Panel\nChoose an option:",
+            reply_markup=get_admin_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Error in admin_command: {e}")
+
+# Broadcast conversation handlers
+async def broadcast_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start text broadcast."""
+    try:
+        query = update.callback_query
+        if query:
+            await query.answer()
+
+        context.user_data['broadcast_type'] = 'text'
+
+        if query:
+            await query.edit_message_text("📝 Send the text message you want to broadcast:")
+        else:
+            await update.message.reply_text("📝 Send the text message you want to broadcast:")
+
+        return BROADCAST_TEXT
+    except Exception as e:
+        logger.error(f"Error in broadcast_text_start: {e}")
+        return ConversationHandler.END
+
+async def broadcast_image_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start image broadcast."""
+    try:
+        query = update.callback_query
+        if query:
+            await query.answer()
+
+        context.user_data['broadcast_type'] = 'image'
+
+        if query:
+            await query.edit_message_text("🖼️ Send the image with caption you want to broadcast:")
+        else:
+            await update.message.reply_text("🖼️ Send the image with caption you want to broadcast:")
+
+        return BROADCAST_MEDIA
+    except Exception as e:
+        logger.error(f"Error in broadcast_image_start: {e}")
+        return ConversationHandler.END
+
+async def broadcast_video_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start video broadcast."""
+    try:
+        query = update.callback_query
+        if query:
+            await query.answer()
+
+        context.user_data['broadcast_type'] = 'video'
+
+        if query:
+            await query.edit_message_text("🎥 Send the video with caption you want to broadcast:")
+        else:
+            await update.message.reply_text("🎥 Send the video with caption you want to broadcast:")
+
+        return BROADCAST_MEDIA
+    except Exception as e:
+        logger.error(f"Error in broadcast_video_start: {e}")
+        return ConversationHandler.END
+
+async def broadcast_receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive broadcast text and send to all users."""
+    try:
+        if update.effective_user.id != ADMIN_ID:
+            return ConversationHandler.END
+
+        text = update.message.text
+
+        status_msg = await update.message.reply_text("📤 Starting broadcast...")
+
+        # Get all users
+        users = await users_collection.find({}).to_list(None)
+        success = 0
+        failed = 0
+
+        for user in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=user['user_id'],
+                    text=f"📢 Broadcast Message:\n\n{text}"
+                )
+                success += 1
+                await asyncio.sleep(0.05)  # Avoid flooding
+            except Exception as e:
+                logger.error(f"Failed to send to {user['user_id']}: {e}")
+                failed += 1
+
+        await status_msg.edit_text(
+            f"✅ Broadcast completed!\n\n"
+            f"✅ Successful: {success}\n"
+            f"❌ Failed: {failed}"
+        )
+
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error in broadcast_receive_text: {e}")
+        return ConversationHandler.END
+
+async def broadcast_receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive broadcast media and send to all users."""
+    try:
+        if update.effective_user.id != ADMIN_ID:
+            return ConversationHandler.END
+
+        broadcast_type = context.user_data.get('broadcast_type', 'image')
+        caption = update.message.caption or ""
+
+        status_msg = await update.message.reply_text("📤 Starting broadcast...")
+
+        # Get all users
+        users = await users_collection.find({}).to_list(None)
+        success = 0
+        failed = 0
+
+        for user in users:
+            try:
+                if broadcast_type == 'image' and update.message.photo:
+                    await context.bot.send_photo(
+                        chat_id=user['user_id'],
+                        photo=update.message.photo[-1].file_id,
+                        caption=f"📢 Broadcast:\n\n{caption}"
+                    )
+                elif broadcast_type == 'video' and update.message.video:
+                    await context.bot.send_video(
+                        chat_id=user['user_id'],
+                        video=update.message.video.file_id,
+                        caption=f"📢 Broadcast:\n\n{caption}"
+                    )
+                success += 1
+                await asyncio.sleep(0.05)  # Avoid flooding
+            except Exception as e:
+                logger.error(f"Failed to send to {user['user_id']}: {e}")
+                failed += 1
+
+        await status_msg.edit_text(
+            f"✅ Broadcast completed!\n\n"
+            f"✅ Successful: {success}\n"
+            f"❌ Failed: {failed}"
+        )
+
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error in broadcast_receive_media: {e}")
+        return ConversationHandler.END
+
+async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel broadcast."""
+    try:
+        query = update.callback_query
+        if query:
+            await query.answer()
+            await query.edit_message_text(
+                "❌ Broadcast cancelled.",
+                reply_markup=get_admin_keyboard()
+            )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error in broadcast_cancel: {e}")
+        return ConversationHandler.END
+
+# Support system handlers
+async def support_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive support message from user."""
+    try:
+        if not context.user_data.get('awaiting_support_message'):
+            return
+
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "No username"
+        message = update.message.text
+
+        # Store in context
+        context.user_data['support_message'] = message
+        context.user_data['awaiting_support_message'] = False
+
+        # Ask for confirmation
+        keyboard = [
+            [InlineKeyboardButton("✅ Confirm & Send", callback_data="support_confirm")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="support_cancel")]
+        ]
+
+        await update.message.reply_text(
+            f"📝 Your message:\n\n{message}\n\n"
+            f"Confirm to send this to bot owner?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Error in support_receive_message: {e}")
+
+async def support_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm and send support ticket to admin."""
+    try:
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "No username"
+        message = context.user_data.get('support_message', '')
+
+        # Save to database
+        ticket = {
+            "user_id": user_id,
+            "username": username,
+            "message": message,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending"
+        }
+        await support_tickets_collection.insert_one(ticket)
+
+        # Send to admin
+        admin_message = f"""
+🎫 New Support Ticket
+
+👤 User: @{username}
+🆔 User ID: {user_id}
+
+📝 Message:
+{message}
+
+Reply using: /replyuser {user_id} [your response]
+        """
+
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message)
+            await query.edit_message_text(
+                "✅ Your message has been sent to the bot owner!\n"
+                "You will receive a response soon.",
+                reply_markup=get_main_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"Failed to send support ticket: {e}")
+            await query.edit_message_text(
+                "❌ Failed to send message. Please try again later.",
+                reply_markup=get_main_keyboard()
+            )
+    except Exception as e:
+        logger.error(f"Error in support_confirm: {e}")
+
+async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel support ticket."""
+    try:
+        query = update.callback_query
+        await query.answer()
+
+        context.user_data['awaiting_support_message'] = False
+        context.user_data['support_message'] = None
+
+        await query.edit_message_text(
+            "❌ Support request cancelled.",
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Error in support_cancel: {e}")
+
+async def replyuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to reply to user support ticket."""
+    try:
+        if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("⛔ You don't have permission to use this command.")
+            return
+
+        # Check if image is attached
+        if update.message.photo:
+            # Reply with image
+            if len(context.args) < 1:
+                await update.message.reply_text("Usage: /replyuser [user_id] (as caption with image)")
+                return
+
+            try:
+                target_user_id = int(context.args[0])
+                caption = update.message.caption
+                response_text = ' '.join(caption.split()[1:]) if caption else "Response from admin"
+
+                await context.bot.send_photo(
+                    chat_id=target_user_id,
+                    photo=update.message.photo[-1].file_id,
+                    caption=f"💬 Response from Admin:\n\n{response_text}"
+                )
+                await update.message.reply_text(f"✅ Reply sent to user {target_user_id}")
+            except ValueError:
+                await update.message.reply_text("❌ Invalid user ID")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Failed to send reply: {e}")
+        else:
+            # Text reply
+            if len(context.args) < 2:
+                await update.message.reply_text("Usage: /replyuser [user_id] [message]")
+                return
+
+            try:
+                target_user_id = int(context.args[0])
+                response_text = ' '.join(context.args[1:])
+
+                await context.bot.send_message(
+                    chat_id=target_user_id,
+                    text=f"💬 Response from Admin:\n\n{response_text}"
+                )
+                await update.message.reply_text(f"✅ Reply sent to user {target_user_id}")
+            except ValueError:
+                await update.message.reply_text("❌ Invalid user ID")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Failed to send reply: {e}")
+    except Exception as e:
+        logger.error(f"Error in replyuser_command: {e}")
+
+async def extract_terabox_info(url: str):
+    """Call Terabox API to get file information."""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            params = {
+                "secret": TERABOX_API_KEY,
+                "url": url
+            }
+            response = await client.get(TERABOX_API_BASE, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("status") == "success" and data.get("list"):
+                return data
+            else:
+                logger.error(f"API error: {data}")
+                return None
+    except Exception as e:
+        logger.error(f"Error calling Terabox API: {e}")
+        return None
+
+async def download_file(url: str, filename: str):
+    """Download file from the given URL."""
+    try:
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+
+            # Save to temp directory
+            temp_dir = Path("/tmp/terabox_downloads")
+            temp_dir.mkdir(exist_ok=True)
+
+            file_path = temp_dir / filename
+            with open(file_path, 'wb') as f:
+                f.write(response.content)
+
+            return str(file_path)
+    except Exception as e:
+        logger.error(f"Error downloading file: {e}")
+        return None
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle messages containing Terabox URLs."""
+    try:
+        # Check if awaiting support message
+        if context.user_data.get('awaiting_support_message'):
+            await support_receive_message(update, context)
+            return
+
+        # Handle edited messages - they don't have regular message
+        if not update.message or not update.message.text:
+            logger.info("Received update without message text (probably edited message)")
+            return
+
+        user_id = update.effective_user.id
+        username = update.effective_user.username
+        message_text = update.message.text
+
+        # Ensure user exists
+        await get_or_create_user(user_id, username)
+
+        # Check if message contains a Terabox URL
+        match = TERABOX_URL_PATTERN.search(message_text)
+
+        if not match:
             await update.message.reply_text(
-                "❌ Ye valid Instagram link nahi lagta.\n\n"
-                "Kripya aisa link bhejen:\n"
-                "`https://www.instagram.com/reel/...`\n"
-                "`https://www.instagram.com/p/...`",
-                parse_mode=ParseMode.MARKDOWN,
+                "❌ Please send a valid Terabox link.\n\nExample: https://terabox.com/s/xxxxx",
+                reply_markup=get_main_keyboard()
             )
-        return
+            return
 
-    await process_download(update, context, match.group(0))
+        # Check download limit
+        remaining = await get_remaining_downloads(user_id)
 
+        if remaining <= 0:
+            time_left = await get_time_until_reset(user_id)
+            limit_text = f"""
+⛔ Download Limit Reached!
 
-# ---------------------------------------------------------------------------
-# Error handler
-# ---------------------------------------------------------------------------
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.exception("Unhandled error: %s", context.error)
+Your daily limit is exhausted.
 
+Options:
+1️⃣ Wait {time_left} for automatic reset
+2️⃣ Invite 1 friend to get {REFERRAL_BONUS} more downloads instantly!
 
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
-async def _self_ping_loop() -> None:
-    """Ping the health-check server every 15 seconds to keep the bot alive."""
-    url = "http://localhost:5000"
+Use /status to check your current status.
+            """
+            await update.message.reply_text(limit_text, reply_markup=get_main_keyboard())
+            return
+
+        terabox_url = match.group(0)
+        # Ensure URL has https://
+        if not terabox_url.startswith('http'):
+            terabox_url = 'https://' + terabox_url
+
+        logger.info(f"Processing Terabox URL: {terabox_url} for user {user_id}")
+
+        # Send processing message
+        status_message = await update.message.reply_text("⏳ Processing your request...")
+
+        try:
+            # Get file info from Terabox API
+            api_response = await extract_terabox_info(terabox_url)
+
+            if not api_response or not api_response.get("list"):
+                await status_message.edit_text("❌ Failed to fetch file information. Please check the link and try again.")
+                return
+
+            files = api_response.get("list", [])
+            total_files = len(files)
+
+            if total_files == 0:
+                await status_message.edit_text("❌ No files found in the provided link.")
+                return
+
+            await status_message.edit_text(f"🔥 Found {total_files} file(s). Downloading...")
+
+            videos_downloaded = 0
+
+            for idx, file_info in enumerate(files, 1):
+                file_type = file_info.get("type", "").lower()
+                file_name = file_info.get("name", "unknown")
+                file_size = file_info.get("size_formatted", "Unknown size")
+
+                # Only process videos and images
+                if file_type not in ["video", "image"]:
+                    logger.info(f"Skipping file {file_name} (type: {file_type})")
+                    continue
+
+                # Use fast_download_link for better speed
+                download_url = file_info.get("fast_download_link") or file_info.get("download_link")
+
+                if not download_url:
+                    logger.error(f"No download link found for {file_name}")
+                    continue
+
+                await status_message.edit_text(f"⬇️ Downloading {file_name} ({file_size})...")
+
+                # Download the file
+                local_path = await download_file(download_url, file_name)
+
+                if not local_path:
+                    await update.message.reply_text(f"❌ Failed to download {file_name}")
+                    continue
+
+                # Send the file to user
+                await status_message.edit_text(f"📤 Uploading {file_name}...")
+
+                try:
+                    if file_type == "video":
+                        # Get thumbnail if available
+                        thumbnail_url = file_info.get("thumbnail")
+                        thumbnail_path = None
+
+                        if thumbnail_url:
+                            thumbnail_path = await download_file(thumbnail_url, f"thumb_{file_name}.jpg")
+
+                        with open(local_path, 'rb') as video_file:
+                            caption = f"📹 {file_name}\n📦 Size: {file_size}"
+                            if file_info.get("duration"):
+                                caption += f"\n⏱️ Duration: {file_info.get('duration')}"
+                            caption += f"\n\n⚠️ Video will be deleted in {VIDEO_DELETE_AFTER_MINUTES} minutes due to copyright compliance. Save it now!"
+
+                            sent_message = await update.message.reply_video(
+                                video=video_file,
+                                caption=caption,
+                                filename=file_name,
+                                supports_streaming=True,
+                                thumbnail=open(thumbnail_path, 'rb') if thumbnail_path else None
+                            )
+
+                            # Schedule auto-deletion for this video
+                            asyncio.create_task(schedule_video_deletion(context, user_id, sent_message.message_id))
+
+                        # Clean up thumbnail
+                        if thumbnail_path and os.path.exists(thumbnail_path):
+                            os.remove(thumbnail_path)
+
+                        videos_downloaded += 1
+
+                    elif file_type == "image":
+                        with open(local_path, 'rb') as image_file:
+                            await update.message.reply_photo(
+                                photo=image_file,
+                                caption=f"🖼️ {file_name}\n📦 Size: {file_size}",
+                                filename=file_name
+                            )
+
+                        videos_downloaded += 1
+
+                    # Clean up downloaded file
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+
+                except Exception as e:
+                    logger.error(f"Error sending file: {e}")
+                    await update.message.reply_text(f"❌ Failed to send {file_name}")
+                    # Clean up on error
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+
+            if videos_downloaded > 0:
+                # Use one download credit
+                await use_download(user_id)
+                remaining_after = await get_remaining_downloads(user_id)
+
+                success_message = f"✅ All files processed successfully!\n\n📊 Downloads remaining: {remaining_after}"
+
+                if remaining_after == 0:
+                    time_left = await get_time_until_reset(user_id)
+                    success_message += f"\n\n⏰ Limit resets in: {time_left}"
+                    success_message += f"\n💡 Or invite friends to get more downloads!"
+                elif remaining_after <= 2:
+                    success_message += f"\n\n💡 Running low? Invite friends for more!"
+
+                await status_message.edit_text(success_message)
+            else:
+                await status_message.edit_text("❌ No supported files found (only videos and images are supported).")
+
+        except Exception as e:
+            logger.error(f"Error in handle_message processing: {e}")
+            await status_message.edit_text("❌ An error occurred while processing your request. Please try again.")
+
+    except Exception as e:
+        logger.error(f"Error in handle_message: {e}")
+        try:
+            if update.message:
+                await update.message.reply_text("⚠️ An error occurred. Please try again.")
+        except:
+            pass
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Log errors and handle them gracefully."""
+    try:
+        logger.error(f"Update {update} caused error {context.error}", exc_info=context.error)
+        
+        # Try to notify user if possible
+        if isinstance(update, Update) and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "⚠️ An error occurred. The bot is still running. Please try again."
+                )
+            except:
+                pass
+    except Exception as e:
+        logger.error(f"Error in error_handler: {e}")
+
+# Web server for Render health check
+async def health_check(request):
+    """Health check endpoint for Render."""
+    return web.Response(text="Terabox Bot is running! ✅", status=200)
+
+async def start_web_server():
+    """Start web server for Render."""
+    try:
+        app = web.Application()
+        app.router.add_get('/', health_check)
+        app.router.add_get('/health', health_check)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        logger.info(f"🌐 Web server started on port {PORT} for Render")
+        return runner
+    except Exception as e:
+        logger.error(f"Error starting web server: {e}")
+        return None
+
+async def keep_alive_ping(application: Application):
+    """Keep the bot alive by periodic self-pings and health checks."""
+    global client  # Declare global at function start
+    logger.info("⏰ Keep-alive ping task started (20-35 seconds interval)")
+
     while True:
         try:
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: urllib.request.urlopen(url, timeout=5)
-            )
-            logger.debug("Self-ping OK")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Self-ping failed: %s", exc)
-        await asyncio.sleep(15)
+            # Random interval between 20-35 seconds
+            interval = random.randint(20, 35)
+            await asyncio.sleep(interval)
 
+            # 1. Ping Telegram to keep connection alive
+            try:
+                bot_info = await application.bot.get_me()
+                logger.info(f"💚 Keep-alive ping: Bot @{bot_info.username} is active (next ping in {interval}s)")
+            except Exception as bot_error:
+                logger.warning(f"⚠️ Keep-alive: Bot ping failed: {bot_error}")
 
-async def _post_init(app: Application) -> None:
-    global BOT_USERNAME
-    me = await app.bot.get_me()
-    BOT_USERNAME = me.username
-    logger.info("Bot online as @%s (admin=%s)", BOT_USERNAME, ADMIN_ID)
+            # 2. Self-ping Render URL to prevent sleep
+            if RENDER_URL:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.get(RENDER_URL)
+                        if response.status_code == 200:
+                            logger.info(f"🌐 Keep-alive: Self-ping to {RENDER_URL} successful")
+                        else:
+                            logger.warning(f"⚠️ Keep-alive: Self-ping returned status {response.status_code}")
+                except Exception as ping_error:
+                    logger.warning(f"⚠️ Keep-alive: Self-ping failed: {ping_error}")
+            else:
+                logger.warning("⚠️ RENDER_URL not detected - self-ping skipped. Set RENDER_EXTERNAL_URL or RENDER_URL env variable.")
 
-    # Indexes
+            # 3. Check MongoDB connection
+            try:
+                await users_collection.find_one({})
+                logger.info("💾 Keep-alive: MongoDB connection active")
+            except Exception as db_error:
+                logger.warning(f"⚠️ Keep-alive: MongoDB check failed: {db_error}")
+                # Try to reconnect
+                try:
+                    client = AsyncIOMotorClient(MONGO_URL)
+                    logger.info("✅ MongoDB reconnected successfully")
+                except Exception as reconnect_error:
+                    logger.error(f"❌ MongoDB reconnection failed: {reconnect_error}")
+
+        except asyncio.CancelledError:
+            logger.info("Keep-alive ping task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"❌ Keep-alive ping error: {e}")
+            await asyncio.sleep(25)
+
+async def post_init(application: Application):
+    """Run after application initialization."""
     try:
-        await users_col.create_index("user_id", unique=True)
-        await users_col.create_index("referred_by")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Index creation skipped: %s", exc)
+        # Start web server for Render
+        await start_web_server()
 
-    # Start keep-alive self-ping in background
-    asyncio.create_task(_self_ping_loop())
-    logger.info("Self-ping loop started (every 15s)")
+        # Start keep-alive task
+        asyncio.create_task(keep_alive_ping(application))
+        logger.info("🚀 Background tasks (web server + keep-alive with self-ping) started")
+    except Exception as e:
+        logger.error(f"Error in post_init: {e}")
 
+def main():
+    """Start the bot."""
+    logger.info("Starting Enhanced Terabox Bot with 24×7 Support...")
 
-def main() -> None:
-    if not BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN missing")
+    try:
+        # Create the Application with post_init callback
+        application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(_post_init)
-        .build()
-    )
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("me", me_command))
-    app.add_handler(CommandHandler("referral", referral_command))
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CommandHandler("setcookie", setcookie_command))
-    app.add_handler(CommandHandler("cookiestatus", cookiestatus_command))
-    app.add_handler(CommandHandler("cancel", cancel_command))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin:"))
-    app.add_handler(
-        MessageHandler(
-            (filters.TEXT | filters.PHOTO | filters.AUDIO | filters.VOICE
-             | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
-            message_handler,
+        # Broadcast conversation handler
+        broadcast_conv_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(broadcast_text_start, pattern="^broadcast_text$"),
+                CallbackQueryHandler(broadcast_image_start, pattern="^broadcast_image$"),
+                CallbackQueryHandler(broadcast_video_start, pattern="^broadcast_video$"),
+            ],
+            states={
+                BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_receive_text)],
+                BROADCAST_MEDIA: [
+                    MessageHandler(filters.PHOTO, broadcast_receive_media),
+                    MessageHandler(filters.VIDEO, broadcast_receive_media)
+                ],
+            },
+            fallbacks=[CallbackQueryHandler(broadcast_cancel, pattern="^broadcast_cancel$")],
         )
-    )
-    app.add_error_handler(error_handler)
 
-    logger.info("Starting Instagram downloader bot in polling mode…")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+        # Register handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("admin", admin_command))
+        application.add_handler(CommandHandler("replyuser", replyuser_command))
+        application.add_handler(broadcast_conv_handler)
+        application.add_handler(CallbackQueryHandler(support_confirm, pattern="^support_confirm$"))
+        application.add_handler(CallbackQueryHandler(support_cancel, pattern="^support_cancel$"))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+        # Register error handler
+        application.add_error_handler(error_handler)
 
-if __name__ == "__main__":
+        # Start the bot with polling
+        logger.info(f"🤖 Bot is running 24×7 with keep-alive on port {PORT}. Press Ctrl+C to stop.")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}")
+
+if __name__ == '__main__':
     main()
