@@ -3,7 +3,7 @@ import http from "http";
 
 console.log("Starting Python Telegram Bot...");
 
-const pythonProcess = spawn("python", ["main.py"], {
+const pythonProcess = spawn("python3.11", ["mainfinal.py"], {
   stdio: "inherit",
 });
 
