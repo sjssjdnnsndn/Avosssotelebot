@@ -886,11 +886,11 @@ Use /status to check your current status.
                     logger.info(f"Skipping file {file_name} (type: {file_type})")
                     continue
 
-                # Use fast_download_link for better speed
-                download_url = file_info.get("fast_download_link") or file_info.get("download_link")
+                # Use normal_dlink from API response
+                download_url = file_info.get("normal_dlink") or file_info.get("zip_dlink")
 
                 if not download_url:
-                    logger.error(f"No download link found for {file_name}")
+                    logger.error(f"No download link found for {file_name}. Available keys: {list(file_info.keys())}")
                     continue
 
                 await status_message.edit_text(f"⬇️ Downloading {file_name} ({file_size})...")
