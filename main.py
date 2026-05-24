@@ -67,7 +67,7 @@ BROADCAST_TYPE, BROADCAST_TEXT, BROADCAST_MEDIA = range(3)
 SUPPORT_MESSAGE, SUPPORT_CONFIRM = range(2)
 
 # MongoDB connection
-MONGO_URL = "mongodb+srv://sanjana928828_db_user:N4z0jLS17oXq4xrB@cluster0.gcwanr2.mongodb.net/?appName=Cluster0"
+MONGO_URL = "mongodb+srv://suraj876699666_db_user:4N0f4wFdjXjNInW4@cluster0.nblqwup.mongodb.net/?appName=Cluster0"
 client = AsyncIOMotorClient(MONGO_URL)
 db = client['terabox_bot']
 users_collection = db.users
@@ -886,8 +886,8 @@ Use /status to check your current status.
                     logger.info(f"Skipping file {file_name} (type: {file_type})")
                     continue
 
-                # Use normal_dlink from API response
-                download_url = file_info.get("normal_dlink") or file_info.get("zip_dlink")
+                # Use fast_download_link for better speed
+                download_url = file_info.get("fast_download_link") or file_info.get("download_link")
 
                 if not download_url:
                     logger.error(f"No download link found for {file_name}")
