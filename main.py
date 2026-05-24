@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration - Hardcoded (no environment variables needed)
 TELEGRAM_TOKEN = "8917741461:AAFX3f-4ooH-B_NTt7CHSEQWYQ69--hIEy4"  # Hardcoded token
-TERABOX_API_KEY = "pk_zdpl0l0zt3jyd6ijf7nkan"
+TERABOX_API_KEY = "pk_gqd3xevkhf8xfqjefdwby"
 TERABOX_API_BASE = "https://api.playterabox.com/api/proxy"
 ADMIN_ID = 6812561508
 PORT = int(os.environ.get('PORT', 10000))  # Render default port
@@ -67,7 +67,7 @@ BROADCAST_TYPE, BROADCAST_TEXT, BROADCAST_MEDIA = range(3)
 SUPPORT_MESSAGE, SUPPORT_CONFIRM = range(2)
 
 # MongoDB connection
-MONGO_URL = "mongodb+srv://suraj876699666_db_user:4N0f4wFdjXjNInW4@cluster0.nblqwup.mongodb.net/?appName=Cluster0"
+MONGO_URL = "mongodb+srv://sanjana928828_db_user:N4z0jLS17oXq4xrB@cluster0.gcwanr2.mongodb.net/?appName=Cluster0"
 client = AsyncIOMotorClient(MONGO_URL)
 db = client['terabox_bot']
 users_collection = db.users
