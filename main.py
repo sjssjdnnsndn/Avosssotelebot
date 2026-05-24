@@ -67,7 +67,7 @@ BROADCAST_TYPE, BROADCAST_TEXT, BROADCAST_MEDIA = range(3)
 SUPPORT_MESSAGE, SUPPORT_CONFIRM = range(2)
 
 # MongoDB connection
-MONGO_URL = "mongodb+srv://sanjana928828_db_user:N4z0jLS17oXq4xrB@cluster0.gcwanr2.mongodb.net/?appName=Cluster0"
+MONGO_URL = "mongodb+srv://suraj876699666_db_user:4N0f4wFdjXjNInW4@cluster0.nblqwup.mongodb.net/?appName=Cluster0"
 client = AsyncIOMotorClient(MONGO_URL)
 db = client['terabox_bot']
 users_collection = db.users
