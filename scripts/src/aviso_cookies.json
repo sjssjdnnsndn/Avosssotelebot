@@ -164,26 +164,6 @@
     "_crHasCrossSiteAncestor": true
   },
   {
-    "name": "sync_cookie_csrf_secondary",
-    "value": "1504552701fake",
-    "domain": ".mc.yandex.com",
-    "path": "/",
-    "expires": 1784019318,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
-    "name": "sync_cookie_csrf_secondary",
-    "value": "907778224fake",
-    "domain": ".mc.yandex.ru",
-    "path": "/",
-    "expires": 1784019318,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
     "name": "sync_cookie_ok_secondary",
     "value": "synced",
     "domain": ".mc.yandex.com",
@@ -270,26 +250,6 @@
     "path": "/",
     "expires": -1,
     "httpOnly": true,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
-    "name": "sync_cookie_csrf",
-    "value": "3449462792fake",
-    "domain": ".mc.yandex.com",
-    "path": "/",
-    "expires": 1784019420,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
-    "name": "sync_cookie_csrf",
-    "value": "649542525fake",
-    "domain": ".mc.yandex.ru",
-    "path": "/",
-    "expires": 1784019421,
-    "httpOnly": false,
     "secure": true,
     "sameSite": "None"
   },
@@ -439,6 +399,118 @@
     "domain": "7132.s7-expresswallet.pro",
     "path": "/",
     "expires": -1,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "remixstlid",
+    "value": "9083720279053536852_QbteoZ1IpbUpSwxeuA9H93EBsHl3ubRvm1jZyjbY5Lc",
+    "domain": ".vkvideo.ru",
+    "path": "/",
+    "expires": 1815555336.917825,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "remixstid",
+    "value": "1297196816_OqdRL8jaZStc6OGtjwcyaqnbXMT6xIrn50xbrev2n9D",
+    "domain": ".vk.com",
+    "path": "/",
+    "expires": 1815555339.310077,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "remixstlid",
+    "value": "9092305265845828750_agzXSL9LyFdBmANoNoQfNqAZxJvDFXney0otIQTd3bz",
+    "domain": ".vk.com",
+    "path": "/",
+    "expires": 1815555339.31009,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "remixgp",
+    "value": "2b6de82c74e0ed15755df8b94f6e03be",
+    "domain": "vkvideo.ru",
+    "path": "/",
+    "expires": 1784624139,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "remixua",
+    "value": "45%7C-1%7C215%7C986521522",
+    "domain": ".vkvideo.ru",
+    "path": "/",
+    "expires": 1815510832.156749,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "remixstlid",
+    "value": "9017350390282338416_mCeuJUsQO71YGiJzD8D6ReEmQCGO9e3Vae1qKNiuftT",
+    "domain": ".vk-portal.net",
+    "path": "/",
+    "expires": 1815555341.600592,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "remixstid",
+    "value": "1700271245_U9p88SKkhs4CZYcTJMZkDg6rPlRC2Hm2B2zCfedXRKg",
+    "domain": ".vk-portal.net",
+    "path": "/",
+    "expires": 1815245208.600614,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "PVID",
+    "value": "0XaaOw1mNUof00003c3DnSof:::0-0-0-f705254-0-f705254:CAASEPf9vVrM2YUt5-K8flGX4_QaYGPuhiRYkp9clOxdCZFtdCkXWmndK0YEE3s6TMHIK86_ChI9VWrMhH6MdlwtO2_voCZ7OzW0AS0gRmSI2zLICjaxQr2cuE-tqnNce_Vnh1epJ7t31kUwddnfTiLWJw6D0A",
+    "domain": "top-fwz1.mail.ru",
+    "path": "/",
+    "expires": 1815641748.620341,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://igruns.blogspot.com",
+    "_crHasCrossSiteAncestor": true
+  },
+  {
+    "name": "VID",
+    "value": "0XaaOw1mNUof00003c3DnSof:::0-0-0-f705254-0-f705254:CAASEPf9vVrM2YUt5-K8flGX4_QaYGPuhiRYkp9clOxdCZFtdCkXWmndK0YEE3s6TMHIK86_ChI9VWrMhH6MdlwtO2_voCZ7OzW0AS0gRmSI2zLICjaxQr2cuE-tqnNce_Vnh1epJ7t31kUwddnfTiLWJw6D0A",
+    "domain": ".mail.ru",
+    "path": "/",
+    "expires": 1815641748.620429,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "PHPSESSID",
+    "value": "6e39a68efa86fd4b8592bbd8b2e39c83",
+    "domain": "mylinkslot.ru",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__session:0.03512210042827091:",
+    "value": "https:",
+    "domain": "mylinkslot.ru",
+    "path": "/",
+    "expires": 1784019542,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
