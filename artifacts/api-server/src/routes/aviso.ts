@@ -157,4 +157,8 @@ router.post("/aviso/login/phase2", async (req, res) => {
   }
 });
 
+export function getBotState(): Record<string, unknown> {
+  return botState;
+}
+
 export default router;

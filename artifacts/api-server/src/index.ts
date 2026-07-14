@@ -1,13 +1,12 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { startTelegramBot } from "./telegram/bot";
+import { startTelegramBot, setBotStateRef } from "./telegram/bot";
+import { getBotState } from "./routes/aviso";
 
 const rawPort = process.env["PORT"];
 
 if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
+  throw new Error("PORT environment variable is required but was not provided.");
 }
 
 const port = Number(rawPort);
@@ -21,8 +20,8 @@ app.listen(port, (err) => {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   }
-
   logger.info({ port }, "Server listening");
 });
 
+setBotStateRef(getBotState);
 startTelegramBot();

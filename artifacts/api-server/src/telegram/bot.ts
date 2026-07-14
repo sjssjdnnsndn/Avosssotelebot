@@ -1,56 +1,72 @@
-import fs from "node:fs";
-import path from "node:path";
 import TelegramBot from "node-telegram-bot-api";
 import { logger } from "../lib/logger";
 
-const DOWNLOADS_DIR = path.resolve(process.cwd(), "downloads");
+// This is imported from the aviso route — we read the same in-memory state
+let botStateRef: () => Record<string, unknown>;
 
-function ensureDownloadsDir() {
-  if (!fs.existsSync(DOWNLOADS_DIR)) {
-    fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+export function setBotStateRef(fn: () => Record<string, unknown>) {
+  botStateRef = fn;
+}
+
+function statusEmoji(status: string): string {
+  switch (status) {
+    case "working": return "🟢";
+    case "starting": return "🟡";
+    case "waiting-for-tasks": return "🟡";
+    case "short-sleep": return "💤";
+    case "long-sleep": return "😴";
+    case "sleeping": return "😴";
+    case "done": return "✅";
+    case "offline": return "🔴";
+    default: return "⚪";
   }
 }
 
-function sanitizeFileName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]/g, "_");
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) + " IST";
 }
 
-async function downloadFileToDisk(
-  bot: TelegramBot,
-  fileId: string,
-  suggestedName: string,
-): Promise<{ filePath: string; fileName: string }> {
-  ensureDownloadsDir();
+function buildStatusMessage(state: Record<string, unknown>): string {
+  const status = (state["status"] as string) ?? "unknown";
+  const balance = (state["balance"] as string) ?? "?";
+  const balanceRaw = (state["balanceRaw"] as number) ?? 0;
+  const totalEarned = (state["totalEarned"] as number) ?? 0;
+  const totalTasks = (state["totalTasks"] as number) ?? 0;
+  const totalYtDone = (state["totalYtDone"] as number) ?? 0;
+  const totalYtEarned = (state["totalYtEarned"] as number) ?? 0;
+  const currentTask = (state["currentTask"] as string) ?? null;
+  const lastUpdated = state["lastUpdated"] as string | null;
+  const sleepUntil = state["sleepUntil"] as string | null;
 
-  const fileLink = await bot.getFileLink(fileId);
-  const response = await fetch(fileLink);
+  let msg = `🤖 *Aviso Bot Status*\n\n`;
+  msg += `${statusEmoji(status)} *Status:* \`${status}\`\n`;
+  msg += `💰 *Balance:* \`${balance}\` (raw: ${balanceRaw})\n`;
+  msg += `📈 *Total Earned:* \`${totalEarned}\`\n`;
+  msg += `📋 *Total Tasks:* \`${totalTasks}\`\n`;
+  msg += `▶️ *YT Done:* \`${totalYtDone}\` | *YT Earned:* \`${totalYtEarned}\`\n`;
 
-  if (!response.ok || !response.body) {
-    throw new Error(`Failed to download file: HTTP ${response.status}`);
+  if (currentTask) {
+    msg += `⚙️ *Current Task:* \`${currentTask}\`\n`;
   }
 
-  const timestamp = Date.now();
-  const safeName = sanitizeFileName(suggestedName);
-  const fileName = `${timestamp}_${safeName}`;
-  const filePath = path.join(DOWNLOADS_DIR, fileName);
+  if (sleepUntil) {
+    msg += `⏰ *Sleep Until:* ${formatDate(sleepUntil)}\n`;
+  }
 
-  const arrayBuffer = await response.arrayBuffer();
-  fs.writeFileSync(filePath, Buffer.from(arrayBuffer));
+  msg += `\n🕐 *Last Updated:* ${formatDate(lastUpdated)}`;
 
-  return { filePath, fileName };
+  return msg;
 }
 
 export function startTelegramBot(): TelegramBot | null {
   const token = process.env["TELEGRAM_BOT_TOKEN"];
 
   if (!token) {
-    logger.warn(
-      "TELEGRAM_BOT_TOKEN is not set — Telegram bot will not start.",
-    );
+    logger.warn("TELEGRAM_BOT_TOKEN is not set — Telegram bot will not start.");
     return null;
   }
-
-  ensureDownloadsDir();
 
   const bot = new TelegramBot(token, { polling: true });
 
@@ -60,119 +76,46 @@ export function startTelegramBot(): TelegramBot | null {
     logger.error({ err }, "Telegram bot polling error");
   });
 
-  bot.onText(/^\/start$/, (msg) => {
-    bot.sendMessage(
+  const sendStatus = async (chatId: number) => {
+    const state = botStateRef ? botStateRef() : { status: "offline" };
+    const text = buildStatusMessage(state);
+    await bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
+  };
+
+  bot.onText(/^\/start$/, async (msg) => {
+    const text =
+      `👋 *Aviso Monitor Bot*\n\n` +
+      `Use these commands:\n` +
+      `• /status — aviso bot ka status dekho\n` +
+      `• /balance — current balance dekho\n` +
+      `• /info — full details`;
+    await bot.sendMessage(msg.chat.id, text, { parse_mode: "Markdown" });
+  });
+
+  bot.onText(/^\/(status|info|check)$/, async (msg) => {
+    await sendStatus(msg.chat.id);
+  });
+
+  bot.onText(/^\/balance$/, async (msg) => {
+    const state = botStateRef ? botStateRef() : { status: "offline", balance: "?" };
+    const balance = (state["balance"] as string) ?? "?";
+    const balanceRaw = (state["balanceRaw"] as number) ?? 0;
+    const status = (state["status"] as string) ?? "unknown";
+    const text =
+      `💰 *Aviso Balance*\n\n` +
+      `Balance: \`${balance}\`\n` +
+      `Raw: \`${balanceRaw}\`\n` +
+      `${statusEmoji(status)} Status: \`${status}\``;
+    await bot.sendMessage(msg.chat.id, text, { parse_mode: "Markdown" });
+  });
+
+  // Handle any other message
+  bot.on("message", async (msg) => {
+    if (msg.text?.startsWith("/")) return; // already handled above
+    await bot.sendMessage(
       msg.chat.id,
-      "Hi! Send me any file, photo, video, or document and I'll save it for you.",
+      "Use /status, /balance, or /info to check aviso bot.",
     );
-  });
-
-  bot.on("document", async (msg) => {
-    const doc = msg.document;
-    if (!doc) return;
-
-    try {
-      const { fileName } = await downloadFileToDisk(
-        bot,
-        doc.file_id,
-        doc.file_name ?? `document_${doc.file_id}`,
-      );
-      logger.info({ fileName, chatId: msg.chat.id }, "Saved Telegram document");
-      await bot.sendMessage(msg.chat.id, `Saved: ${doc.file_name ?? fileName}`);
-    } catch (err) {
-      logger.error({ err }, "Failed to save Telegram document");
-      await bot.sendMessage(
-        msg.chat.id,
-        "Sorry, something went wrong saving that file.",
-      );
-    }
-  });
-
-  bot.on("photo", async (msg) => {
-    const photos = msg.photo;
-    if (!photos || photos.length === 0) return;
-
-    const largest = photos[photos.length - 1];
-    if (!largest) return;
-
-    try {
-      const { fileName } = await downloadFileToDisk(
-        bot,
-        largest.file_id,
-        `photo_${largest.file_id}.jpg`,
-      );
-      logger.info({ fileName, chatId: msg.chat.id }, "Saved Telegram photo");
-      await bot.sendMessage(msg.chat.id, `Saved photo: ${fileName}`);
-    } catch (err) {
-      logger.error({ err }, "Failed to save Telegram photo");
-      await bot.sendMessage(
-        msg.chat.id,
-        "Sorry, something went wrong saving that photo.",
-      );
-    }
-  });
-
-  bot.on("video", async (msg) => {
-    const video = msg.video;
-    if (!video) return;
-
-    try {
-      const { fileName } = await downloadFileToDisk(
-        bot,
-        video.file_id,
-        `video_${video.file_id}.mp4`,
-      );
-      logger.info({ fileName, chatId: msg.chat.id }, "Saved Telegram video");
-      await bot.sendMessage(msg.chat.id, `Saved video: ${fileName}`);
-    } catch (err) {
-      logger.error({ err }, "Failed to save Telegram video");
-      await bot.sendMessage(
-        msg.chat.id,
-        "Sorry, something went wrong saving that video.",
-      );
-    }
-  });
-
-  bot.on("audio", async (msg) => {
-    const audio = msg.audio;
-    if (!audio) return;
-
-    try {
-      const { fileName } = await downloadFileToDisk(
-        bot,
-        audio.file_id,
-        audio.file_name ?? `audio_${audio.file_id}.mp3`,
-      );
-      logger.info({ fileName, chatId: msg.chat.id }, "Saved Telegram audio");
-      await bot.sendMessage(msg.chat.id, `Saved audio: ${fileName}`);
-    } catch (err) {
-      logger.error({ err }, "Failed to save Telegram audio");
-      await bot.sendMessage(
-        msg.chat.id,
-        "Sorry, something went wrong saving that audio.",
-      );
-    }
-  });
-
-  bot.on("voice", async (msg) => {
-    const voice = msg.voice;
-    if (!voice) return;
-
-    try {
-      const { fileName } = await downloadFileToDisk(
-        bot,
-        voice.file_id,
-        `voice_${voice.file_id}.ogg`,
-      );
-      logger.info({ fileName, chatId: msg.chat.id }, "Saved Telegram voice note");
-      await bot.sendMessage(msg.chat.id, `Saved voice note: ${fileName}`);
-    } catch (err) {
-      logger.error({ err }, "Failed to save Telegram voice note");
-      await bot.sendMessage(
-        msg.chat.id,
-        "Sorry, something went wrong saving that voice note.",
-      );
-    }
   });
 
   return bot;
