@@ -34,7 +34,7 @@
     "value": "GA1.1.1454525970.1784018716",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818580396.040118,
+    "expires": 1818580750.056498,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
@@ -144,7 +144,7 @@
     "value": "1",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1815556396,
+    "expires": 1815556750,
     "httpOnly": true,
     "secure": true,
     "sameSite": "None",
@@ -262,16 +262,6 @@
     "sameSite": "None"
   },
   {
-    "name": "GPS",
-    "value": "1",
-    "domain": ".youtube.com",
-    "path": "/",
-    "expires": 1784020643.152492,
-    "httpOnly": true,
-    "secure": true,
-    "sameSite": "Lax"
-  },
-  {
     "name": "YSC",
     "value": "WwJTePZSkOc",
     "domain": ".youtube.com",
@@ -288,7 +278,7 @@
     "value": "ZqaI-80e14I",
     "domain": ".youtube.com",
     "path": "/",
-    "expires": 1799572387.02421,
+    "expires": 1799572741.096159,
     "httpOnly": true,
     "secure": true,
     "sameSite": "None",
@@ -300,7 +290,7 @@
     "value": "CgJVUxIEGgAgLA%3D%3D",
     "domain": ".youtube.com",
     "path": "/",
-    "expires": 1799572387.024246,
+    "expires": 1799572741.09618,
     "httpOnly": true,
     "secure": true,
     "sameSite": "None",
@@ -312,7 +302,7 @@
     "value": "tz=Europe.Moscow",
     "domain": ".youtube.com",
     "path": "/",
-    "expires": 1818580389.830466,
+    "expires": 1818580743.719819,
     "httpOnly": false,
     "secure": true,
     "sameSite": "Lax"
@@ -694,21 +684,31 @@
     "_crHasCrossSiteAncestor": false
   },
   {
+    "name": "GPS",
+    "value": "1",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1784022541.096089,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
     "name": "_ga_65E9RZ06ED",
-    "value": "GS2.1.s1784018716$o1$g1$t1784020396$j30$l0$h0",
+    "value": "GS2.1.s1784018716$o1$g1$t1784020750$j59$l0$h0",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818580396.031138,
+    "expires": 1818580750.056183,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
   },
   {
     "name": "bh",
-    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIaA3g4NiIOMTM4LjAuNzIwNC4xMDAqAj8wOgkiV2luZG93cyJCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYK/719IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
+    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIaA3g4NiIOMTM4LjAuNzIwNC4xMDAqAj8wOgkiV2luZG93cyJCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYJD+19IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1818580399,
+    "expires": 1818580752,
     "httpOnly": false,
     "secure": true,
     "sameSite": "None"
