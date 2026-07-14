@@ -52,6 +52,14 @@ export function startTelegramBot(): TelegramBot | null {
     return null;
   }
 
+  // Only start polling on port 5000 (main instance) to avoid 409 Conflict
+  // when the artifact workflow also starts this server on a different port
+  const port = process.env["PORT"];
+  if (port && port !== "5000") {
+    logger.info({ port }, "Telegram bot skipped — only starts on port 5000");
+    return null;
+  }
+
   const bot = new TelegramBot(token, { polling: true });
   logger.info("Telegram bot started and polling for messages");
 
