@@ -50,6 +50,10 @@ author = "agent"
 task = "workflow.run"
 args = "Start application"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Aviso Surf Bot"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -61,3 +65,19 @@ waitForPort = 5000
 
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow]]
+name = "Aviso Surf Bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node scripts/src/aviso_surf_bot_vpn.cjs"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[userenv]
+
+[userenv.shared]
+API_BASE_URL = "http://localhost:5000"

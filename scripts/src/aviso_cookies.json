@@ -30,21 +30,11 @@
     "sameSite": "Lax"
   },
   {
-    "name": "bh",
-    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIqAj8wOgkiV2luZG93cyJgm+7X0gZqHtzK4f8IktihsQOfz+HqA/v68OcN6//99g/7kc+HCA==",
-    "domain": ".yandex.ru",
-    "path": "/",
-    "expires": 1818578715,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
     "name": "_ga",
     "value": "GA1.1.1454525970.1784018716",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818578716.126259,
+    "expires": 1818578852.121883,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
@@ -112,31 +102,11 @@
     "sameSite": "None"
   },
   {
-    "name": "sync_cookie_csrf",
-    "value": "367933058fake",
-    "domain": ".mc.yandex.com",
-    "path": "/",
-    "expires": 1784019317,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
     "name": "_ym_isad",
     "value": "2",
     "domain": ".aviso.bz",
     "path": "/",
     "expires": 1784090717,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
-    "name": "sync_cookie_csrf",
-    "value": "316054547fake",
-    "domain": ".mc.yandex.ru",
-    "path": "/",
-    "expires": 1784019317,
     "httpOnly": false,
     "secure": true,
     "sameSite": "None"
@@ -156,8 +126,8 @@
     "value": "EPxe2WhRqTFAsY0sPtxfLSMoJHHDHf1mGgSgW5Q6ixX8zoZKoVjv2Mh7txfa3JJ5oAQ0zfPmLXihic0sS9qNQByUrT4=",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1818578718.499087,
-    "httpOnly": true,
+    "expires": 1818578821.269714,
+    "httpOnly": false,
     "secure": true,
     "sameSite": "None"
   },
@@ -166,7 +136,7 @@
     "value": "4040382871784018718",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1818578718.49941,
+    "expires": 1818578821.26962,
     "httpOnly": false,
     "secure": true,
     "sameSite": "None"
@@ -176,17 +146,7 @@
     "value": "4040382871784018718",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1815554718,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
-    "name": "ymex",
-    "value": "1815554718.yrts.1784018718#1815554718.yrtsi.1784018718",
-    "domain": ".yandex.com",
-    "path": "/",
-    "expires": 1815554718,
+    "expires": 1818578821.269695,
     "httpOnly": false,
     "secure": true,
     "sameSite": "None"
@@ -196,22 +156,12 @@
     "value": "1",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1815554718,
+    "expires": 1815554852,
     "httpOnly": true,
     "secure": true,
     "sameSite": "None",
     "partitionKey": "https://aviso.bz",
     "_crHasCrossSiteAncestor": true
-  },
-  {
-    "name": "bh",
-    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIaA3g4NiIOMTM4LjAuNzIwNC4xMDAqAj8wOgkiV2luZG93cyJCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYJ7u19IGah7cyuH/CJLYobEDn8/h6gP7+vDnDev//fYP+5HPhwg=",
-    "domain": ".yandex.com",
-    "path": "/",
-    "expires": 1818578718,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
   },
   {
     "name": "sync_cookie_csrf_secondary",
@@ -294,22 +244,182 @@
     "sameSite": "Lax"
   },
   {
-    "name": "_ga_65E9RZ06ED",
-    "value": "GS2.1.s1784018716$o1$g0$t1784018721$j55$l0$h0",
-    "domain": ".aviso.bz",
-    "path": "/",
-    "expires": 1818578721.801309,
-    "httpOnly": false,
-    "secure": false,
-    "sameSite": "Lax"
-  },
-  {
     "name": "NID",
     "value": "533=enp2NBmCD2OJtZ-Nwf0dxc1CZRACd12pXHlgZrt_lZRUer0RcKRefRH9mD9RcE17usHAPlPIBSaiHvA13RCp2_zO8K7B0VKQAp2MAAfnITsYmuPd86Vri_lCjQpdm5jI9djyMEF_9f4KjM9Ck5HD4EmYX8e-hzj_AL7ZjBnkm2wJSQ09xSjg3GhzJ5LXxUbJ5A2r-Y3Jl5zO",
     "domain": ".google.com",
     "path": "/",
     "expires": 1799829922.342582,
     "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "bh",
+    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIqAj8wOgkiV2luZG93cyJghO/X0gZqF9zK4f8IktihsQOfz+HqA/v67OgG84EC",
+    "domain": ".yandex.ru",
+    "path": "/",
+    "expires": 1818578820,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_cfuvid",
+    "value": "0oksiD5jQq3N5cYeevZgQeThgaxcWS7j2kp4ziV5ISY-1784018820849-0.0.1.1-604800000",
+    "domain": ".aviso.bz",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "sync_cookie_csrf",
+    "value": "3449462792fake",
+    "domain": ".mc.yandex.com",
+    "path": "/",
+    "expires": 1784019420,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "sync_cookie_csrf",
+    "value": "649542525fake",
+    "domain": ".mc.yandex.ru",
+    "path": "/",
+    "expires": 1784019421,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "yp",
+    "value": "1784105221.yu.4040382871784018718",
+    "domain": ".yandex.com",
+    "path": "/",
+    "expires": 1818578821.269731,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "ymex",
+    "value": "1786610821.oyu.4040382871784018718#1815554718.yrts.1784018718#1815554718.yrtsi.1784018718",
+    "domain": ".yandex.com",
+    "path": "/",
+    "expires": 1815554821,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "sync_cookie_ok",
+    "value": "synced",
+    "domain": ".mc.yandex.com",
+    "path": "/",
+    "expires": 1784105221,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "GPS",
+    "value": "1",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1784020643.152492,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "YSC",
+    "value": "WwJTePZSkOc",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "VISITOR_INFO1_LIVE",
+    "value": "ZqaI-80e14I",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1799570843.152524,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "VISITOR_PRIVACY_METADATA",
+    "value": "CgJVUxIEGgAgLA%3D%3D",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1799570843.152535,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "PREF",
+    "value": "tz=Europe.Moscow",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1818578845.814689,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__Secure-YNID",
+    "value": "19.YT=MBSchDOuHnSP76UCwdiOSQc6xmiHHEvMjP5HtromO_-er-BhmQOKs1BztDaEY6tdtU0loF-M4GT5VJV8XfElnT6JXa9gzVdeJvuk7ZBPm5yq3rSw-bH46KsZU6MeNbgLrfJYtfu0av4j4f1AhdlgspDLo5xwF_XK9fZdV2f3s7oGO9LHp2rRXwZYb3JKLxJh9QCctXRMoogoNhmBabelP75KZAQ9Z9M1rHTt9nLhtGEPyY4bg2I3sGe-47WWHVR2Ps-sbFqlO6kOLy_1uIK3hf_DNS2R0nahuYOLIHBl9B54SCGjCYGMzTi0oY35itOX_uDd_enPRt0ffFGlrlLXGg",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1799570843.167161,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "__Secure-ROLLOUT_TOKEN",
+    "value": "CJSateHnj4XAkQEQ2cqpi-TRlQMYr8OljOTRlQM%3D",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1799570845.167281,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "_ga_65E9RZ06ED",
+    "value": "GS2.1.s1784018716$o1$g1$t1784018852$j28$l0$h0",
+    "domain": ".aviso.bz",
+    "path": "/",
+    "expires": 1818578852.121589,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "bh",
+    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIaA3g4NiIOMTM4LjAuNzIwNC4xMDAqAj8wOgkiV2luZG93cyJCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYKfv19IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
+    "domain": ".yandex.com",
+    "path": "/",
+    "expires": 1818578855,
+    "httpOnly": false,
     "secure": true,
     "sameSite": "None"
   }

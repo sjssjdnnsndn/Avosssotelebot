@@ -12384,3 +12384,69 @@
 [11/7/2026, 9:26:13 pm] 🌐 Surf: no tasks available
 [11/7/2026, 9:26:13 pm] 
 😴 No tasks found — waiting 1min then rechecking...
+
+═══════════════════════════════════════════════════════
+=== BOT START v8 14/7/2026, 2:16:58 pm ===
+═══════════════════════════════════════════════════════
+[14/7/2026, 2:16:58 pm] 🚀 Aviso Bot v10 (like + subscribe + surf) starting…
+[14/7/2026, 2:16:58 pm] 🛡  Chromium: /nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium
+[14/7/2026, 2:16:58 pm] 🛡  Task types: like | subscribe | surf  [watch: DISABLED]
+[14/7/2026, 2:16:58 pm] ♾️  Mode: 24x7 persistent — no long breaks ever
+[14/7/2026, 2:16:58 pm] 😴  No-task sleep: 1 min → recheck
+[14/7/2026, 2:16:58 pm] 
+🍪 Loaded 31 saved cookies — launching browser
+[14/7/2026, 2:16:59 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:17:02 pm] 💰 Balance: 5.99 руб. Основной счет
+[14/7/2026, 2:17:02 pm] 
+🔄 Main loop started — running 24x7, no scheduled breaks
+[14/7/2026, 2:17:02 pm] 
+── [0m / 360m] Checking for tasks...
+[14/7/2026, 2:17:05 pm] 📋 YT tasks available: like=2 subscribe=0 watch=0
+[14/7/2026, 2:17:05 pm] ▶ Running [like] id=442652 price=0.042
+[14/7/2026, 2:17:05 pm] [like 442652] Starting | YouTube: https://www.youtube.com/watch?v=L5ONnGBmwJI
+[14/7/2026, 2:17:20 pm] [like 442652] No popup event — opening like page directly
+[14/7/2026, 2:17:20 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:17:20 pm] [like 442652] Like page: https://aviso.bz/go/youtube-start-like.php?task_id=442652
+[14/7/2026, 2:17:22 pm] [like 442652] Clicking Like button...
+[14/7/2026, 2:17:29 pm] [like 442652] Like page closed — checking for confirm
+[14/7/2026, 2:17:35 pm] [like 442652] ✅ Confirm clicked
+[14/7/2026, 2:17:39 pm] [like 442652] ✅ Like complete | Balance: 6.0395 Основной счет
+[14/7/2026, 2:17:42 pm] 
+── [0m / 360m] Checking for tasks...
+[14/7/2026, 2:17:45 pm] 📋 YT tasks available: like=1 subscribe=0 watch=0
+[14/7/2026, 2:17:45 pm] ▶ Running [like] id=442651 price=0.042
+[14/7/2026, 2:17:45 pm] [like 442651] Starting | YouTube: https://www.youtube.com/watch?v=gZcOJpHBEGY
+[14/7/2026, 2:18:00 pm] [like 442651] No popup event — opening like page directly
+[14/7/2026, 2:18:00 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:18:01 pm] [like 442651] Like page: https://aviso.bz/go/youtube-start-like.php?task_id=442651
+[14/7/2026, 2:18:03 pm] [like 442651] Clicking Like button...
+[14/7/2026, 2:18:06 pm] [like 442651] ❌ Error: page.waitForTimeout: Target page, context or browser has been closed
+[14/7/2026, 2:18:06 pm] ⚠ YT check error: browserContext.cookies: Target page, context or browser has been closed
+[14/7/2026, 2:18:06 pm] ⚠ Surf check error: page.goto: Target page, context or browser has been closed
+[14/7/2026, 2:18:06 pm] 
+😴 No tasks found — waiting 1min then rechecking...
+
+═══════════════════════════════════════════════════════
+=== BOT START v8 14/7/2026, 2:18:10 pm ===
+═══════════════════════════════════════════════════════
+[14/7/2026, 2:18:10 pm] 🚀 Aviso Bot v10 (like + subscribe + surf) starting…
+[14/7/2026, 2:18:10 pm] 🛡  Chromium: /nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium
+[14/7/2026, 2:18:10 pm] 🛡  Task types: like | subscribe | surf  [watch: DISABLED]
+[14/7/2026, 2:18:10 pm] ♾️  Mode: 24x7 persistent — no long breaks ever
+[14/7/2026, 2:18:10 pm] 😴  No-task sleep: 1 min → recheck
+[14/7/2026, 2:18:10 pm] 
+🍪 Loaded 41 saved cookies — launching browser
+[14/7/2026, 2:18:11 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:18:13 pm] 💰 Balance: 6.03 руб. Основной счет
+[14/7/2026, 2:18:13 pm] 
+🔄 Main loop started — running 24x7, no scheduled breaks
+[14/7/2026, 2:18:13 pm] 
+── [0m / 360m] Checking for tasks...
+[14/7/2026, 2:18:17 pm] 📋 YT tasks available: like=1 subscribe=0 watch=0
+[14/7/2026, 2:18:17 pm] ▶ Running [like] id=442651 price=0.042
+[14/7/2026, 2:18:17 pm] [like 442651] Starting | YouTube: https://www.youtube.com/watch?v=gZcOJpHBEGY
+[14/7/2026, 2:18:32 pm] [like 442651] No popup event — opening like page directly
+[14/7/2026, 2:18:32 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:18:32 pm] [like 442651] Like page: https://aviso.bz/go/youtube-start-like.php?task_id=442651
+[14/7/2026, 2:18:34 pm] [like 442651] Clicking Like button...
+[14/7/2026, 2:18:41 pm] [like 442651] Like page closed — checking for confirm
