@@ -80,4 +80,9 @@ outputType = "console"
 [userenv]
 
 [userenv.shared]
+
+[userenv.development]
 API_BASE_URL = "http://localhost:5000"
+
+[userenv.production]
+API_BASE_URL = "https://telegram-bot-runner--raman682844.replit.app"

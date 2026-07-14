@@ -8,4 +8,9 @@ router.get("/healthz", (_req, res) => {
   res.json(data);
 });
 
+// Keep-alive ping endpoint — for external cron jobs
+router.get("/ping", (_req, res) => {
+  res.json({ ok: true, ts: Date.now(), message: "pong" });
+});
+
 export default router;
