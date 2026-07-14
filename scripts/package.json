@@ -1,0 +1,20 @@
+{
+  "name": "@workspace/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "hello": "tsx ./src/hello.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "aviso:login1": "node ./src/aviso_login_phase1.cjs",
+    "aviso:login2": "node ./src/aviso_login_phase2.cjs",
+    "aviso:bot": "node ./src/aviso_surf_bot_vpn.cjs"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "catalog:"
+  }
+}

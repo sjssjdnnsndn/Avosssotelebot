@@ -1,0 +1,119 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: aviso
+    description: Aviso bot state
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /aviso/status:
+    get:
+      operationId: getAvisoStatus
+      tags: [aviso]
+      summary: Get bot status
+      description: Returns current Aviso bot state
+      responses:
+        "200":
+          description: Bot state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvisoStatus"
+  /aviso/update:
+    post:
+      operationId: updateAvisoStatus
+      tags: [aviso]
+      summary: Bot pushes its state here
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AvisoUpdate"
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    AvisoStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          nullable: true
+        balance:
+          type: string
+          nullable: true
+        balanceRaw:
+          type: number
+          nullable: true
+        totalEarned:
+          type: number
+          nullable: true
+        totalTasks:
+          type: number
+          nullable: true
+        totalYtDone:
+          type: number
+          nullable: true
+        totalYtEarned:
+          type: number
+          nullable: true
+        currentTask:
+          nullable: true
+          type: object
+          properties:
+            id: {}
+            type: {}
+        sleepUntil:
+          type: string
+          nullable: true
+        lastUpdated:
+          type: string
+          nullable: true
+        log:
+          type: array
+          items:
+            type: string
+        balanceHistory:
+          type: array
+          items: {}
+    AvisoUpdate:
+      type: object
+      additionalProperties: true
