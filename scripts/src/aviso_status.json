@@ -1,5 +1,5 @@
 {
-  "status": "working",
+  "status": "waiting-for-tasks",
   "currentTask": null,
   "balance": "6.48 руб. Основной счет",
   "balanceRaw": 6.48,
@@ -8,9 +8,16 @@
   "totalYtDone": 6,
   "totalYtEarned": 0,
   "sessionStart": 1784018893697,
-  "sleepUntil": null,
-  "lastUpdated": "2026-07-14T09:21:09.402Z",
+  "sleepUntil": "2026-07-14T09:22:54.396Z",
+  "lastUpdated": "2026-07-14T09:22:09.256Z",
   "log": [
+    "[14/7/2026, 2:52:09 pm] \n😴 No tasks found — waiting 1min then rechecking...",
+    "[14/7/2026, 2:52:09 pm] 🌐 Surf: no tasks available",
+    "[14/7/2026, 2:52:05 pm] 📋 YT: no like/subscribe tasks available",
+    "[14/7/2026, 2:52:02 pm] \n── [0m / 360m] Checking for tasks...",
+    "[14/7/2026, 2:52:02 pm] 🔍 Break over — rechecking tasks...",
+    "[14/7/2026, 2:51:13 pm] \n😴 No tasks found — waiting 1min then rechecking...",
+    "[14/7/2026, 2:51:13 pm] 🌐 Surf: no tasks available",
     "[14/7/2026, 2:51:09 pm] 📋 YT: no like/subscribe tasks available",
     "[14/7/2026, 2:51:06 pm] \n── [0m / 360m] Checking for tasks...",
     "[14/7/2026, 2:51:06 pm] 🔍 Break over — rechecking tasks...",
@@ -53,14 +60,7 @@
     "[14/7/2026, 2:45:14 pm] \n😴 No tasks found — waiting 1min then rechecking...",
     "[14/7/2026, 2:45:14 pm] 🌐 Surf: no tasks available",
     "[14/7/2026, 2:45:10 pm] 📋 YT: no like/subscribe tasks available",
-    "[14/7/2026, 2:45:07 pm] \n── [0m / 360m] Checking for tasks...",
-    "[14/7/2026, 2:45:07 pm] 🔍 Break over — rechecking tasks...",
-    "[14/7/2026, 2:44:26 pm] \n😴 No tasks found — waiting 1min then rechecking...",
-    "[14/7/2026, 2:44:26 pm] 🌐 Surf: no tasks available",
-    "[14/7/2026, 2:44:22 pm] 📋 YT: no like/subscribe tasks available",
-    "[14/7/2026, 2:44:19 pm] \n── [0m / 360m] Checking for tasks...",
-    "[14/7/2026, 2:44:19 pm] 🔍 Break over — rechecking tasks...",
-    "[14/7/2026, 2:43:35 pm] \n😴 No tasks found — waiting 1min then rechecking..."
+    "[14/7/2026, 2:45:07 pm] \n── [0m / 360m] Checking for tasks..."
   ],
   "balanceHistory": []
 }
