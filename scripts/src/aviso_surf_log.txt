@@ -12520,3 +12520,35 @@
 [14/7/2026, 2:30:24 pm] 📋 YT tasks available: like=2 subscribe=0 watch=0
 [14/7/2026, 2:30:24 pm] ▶ Running [like] id=442657 price=0.042
 [14/7/2026, 2:30:24 pm] [like 442657] Starting | YouTube: https://www.youtube.com/watch?v=YPiF2wbc0ck
+[14/7/2026, 2:30:39 pm] [like 442657] No popup event — opening like page directly
+[14/7/2026, 2:30:39 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:30:39 pm] [like 442657] Like page: https://aviso.bz/go/youtube-start-like.php?task_id=442657
+[14/7/2026, 2:30:41 pm] [like 442657] Clicking Like button...
+[14/7/2026, 2:30:48 pm] [like 442657] Like page closed — checking for confirm
+[14/7/2026, 2:30:53 pm] [like 442657] ✅ Confirm clicked
+[14/7/2026, 2:30:57 pm] [like 442657] ✅ Like complete | Balance: 6.3455 Основной счет
+[14/7/2026, 2:31:03 pm] 
+── [0m / 360m] Checking for tasks...
+[14/7/2026, 2:31:06 pm] 📋 YT: no like/subscribe tasks available
+[14/7/2026, 2:31:10 pm] 🌐 Surf: no tasks available
+[14/7/2026, 2:31:10 pm] 
+😴 No tasks found — waiting 1min then rechecking...
+[14/7/2026, 2:31:53 pm] 🔍 Break over — rechecking tasks...
+[14/7/2026, 2:31:53 pm] 
+── [0m / 360m] Checking for tasks...
+[14/7/2026, 2:31:56 pm] 📋 YT tasks available: like=1 subscribe=0 watch=0
+[14/7/2026, 2:31:56 pm] ▶ Running [like] id=442658 price=0.042
+[14/7/2026, 2:31:56 pm] [like 442658] Starting | YouTube: https://www.youtube.com/watch?v=pwmkizMlpuI
+[14/7/2026, 2:32:11 pm] [like 442658] No popup event — opening like page directly
+[14/7/2026, 2:32:11 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:32:11 pm] [like 442658] Like page: https://aviso.bz/go/youtube-start-like.php?task_id=442658
+[14/7/2026, 2:32:13 pm] [like 442658] Clicking Like button...
+[14/7/2026, 2:32:20 pm] [like 442658] Like page closed — checking for confirm
+[14/7/2026, 2:32:26 pm] [like 442658] ✅ Confirm clicked
+[14/7/2026, 2:32:30 pm] [like 442658] ✅ Like complete | Balance: 6.3875 Основной счет
+[14/7/2026, 2:32:34 pm] 
+── [0m / 360m] Checking for tasks...
+[14/7/2026, 2:32:38 pm] 📋 YT: no like/subscribe tasks available
+[14/7/2026, 2:32:41 pm] 🌐 Surf: no tasks available
+[14/7/2026, 2:32:41 pm] 
+😴 No tasks found — waiting 1min then rechecking...
