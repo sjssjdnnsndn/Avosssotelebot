@@ -34,9 +34,9 @@ externalPort = 3003
 PORT = "5000"
 
 [deployment]
-deploymentTarget = "autoscale"
-run = ["node", "./dist/index.cjs"]
-build = ["npm", "run", "build"]
+deploymentTarget = "vm"
+run = ["bash", "-c", "PORT=5000 node --enable-source-maps artifacts/api-server/dist/index.mjs & node scripts/src/aviso_surf_bot_vpn.cjs & wait"]
+build = ["pnpm", "--filter", "@workspace/api-server", "run", "build"]
 
 [workflows]
 runButton = "Project"

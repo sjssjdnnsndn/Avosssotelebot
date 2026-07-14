@@ -12478,3 +12478,17 @@
 [14/7/2026, 2:19:43 pm] [VPN] ✅ Injected: about:blank
 [14/7/2026, 2:20:30 pm] [surf 155633] ❌ Not confirmed: Заявка не найдена
 [14/7/2026, 2:20:30 pm] ⏳ Human delay 75s
+[14/7/2026, 2:21:45 pm] [surf 155455] 💰0.037 руб | ⏱20s | https://timeszp.com/article.html
+[14/7/2026, 2:21:46 pm] [surf 155455] go-serf: ✅
+[14/7/2026, 2:21:46 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:22:08 pm] [surf 155455] ✅ PAID +0.037 руб | Total: 0.037 (1) | Balance: 6.08 руб. Основной счет
+[14/7/2026, 2:22:08 pm] ⏳ Human delay 99s
+[14/7/2026, 2:23:47 pm] [surf 147639] 💰0.037 руб | ⏱20s | https://eclik.pro/?r=30111
+[14/7/2026, 2:23:47 pm] [surf 147639] go-serf: ✅
+[14/7/2026, 2:23:48 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:24:10 pm] [surf 147639] ✅ PAID +0.037 руб | Total: 0.074 (2) | Balance: 6.08 руб. Основной счет
+[14/7/2026, 2:24:12 pm] [surf 155518] 💰0.037 руб | ⏱20s | https://www.smolensk2.ru/_news/_newsy2.html
+[14/7/2026, 2:24:12 pm] [surf 155518] go-serf: ✅
+[14/7/2026, 2:24:12 pm] [VPN] ✅ Injected: about:blank
+[14/7/2026, 2:24:34 pm] [surf 155518] ✅ PAID +0.037 руб | Total: 0.111 (3) | Balance: 6.08 руб. Основной счет
+[14/7/2026, 2:24:34 pm] ⏳ Human delay 61s

@@ -432,5 +432,15 @@
     "httpOnly": false,
     "secure": true,
     "sameSite": "None"
+  },
+  {
+    "name": "PHPSESSID",
+    "value": "qsjlnlm17n87ch1u6ovdcolgt7",
+    "domain": "7132.s7-expresswallet.pro",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
   }
 ]

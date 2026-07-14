@@ -29,7 +29,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Root-level ping for external keep-alive cron jobs
+// Root-level health/ping — returns 200 for deployment health probe & external cron jobs
+app.get("/", (_req, res) => {
+  res.json({ ok: true, service: "aviso-bot-server" });
+});
+
 app.get("/ping", (_req, res) => {
   res.json({ ok: true, ts: Date.now(), message: "pong" });
 });
