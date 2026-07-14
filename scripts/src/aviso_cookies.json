@@ -34,7 +34,7 @@
     "value": "GA1.1.1454525970.1784018716",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818578979.899051,
+    "expires": 1818579532.34076,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
@@ -48,18 +48,6 @@
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
-  },
-  {
-    "name": "cf_clearance",
-    "value": "m2orI5g5SOdo.6s_tzCumMhwSs.RldPtEOq_2uPGLvk-1784018716-1.2.1.1-27BhYVDJqlltj8TcxUx3jKa89QngFW0UNAL3XNoO9DontBjPAV0zZcT5CHiPxDLdjb9x.ST7U7R55lMR9Ng_5IZlDPgi0RUdLCtzUvaS0rsnIQFTYQ0_RYlYy7TRsGZHAn5QmPJLQFy_zcLZcXeXEPj4g0Da4mb7g05j0hlpvNZCk.OVw.r89EqCtTjHePQymOJRdP314qblByiyUu_t3sLco.bOza0N66JdU_IDR9EtDErpiCw0sMZcjZIP8X_FQyzwHPKU8ZsxMkIbYpf1yKqMovdVQujJiS8jB0NZ567neZRGTDxxiGBjlZFeq7UoYoz_pevHqTc9xj0TFWH9dQ",
-    "domain": ".aviso.bz",
-    "path": "/",
-    "expires": 1815554716.477217,
-    "httpOnly": true,
-    "secure": true,
-    "sameSite": "None",
-    "partitionKey": "https://aviso.bz",
-    "_crHasCrossSiteAncestor": false
   },
   {
     "name": "googtrans",
@@ -156,7 +144,7 @@
     "value": "1",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1815554994,
+    "expires": 1815555532,
     "httpOnly": true,
     "secure": true,
     "sameSite": "None",
@@ -230,16 +218,6 @@
     "path": "/",
     "expires": 1799829922.342582,
     "httpOnly": true,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
-    "name": "bh",
-    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIqAj8wOgkiV2luZG93cyJghO/X0gZqF9zK4f8IktihsQOfz+HqA/v67OgG84EC",
-    "domain": ".yandex.ru",
-    "path": "/",
-    "expires": 1818578820,
-    "httpOnly": false,
     "secure": true,
     "sameSite": "None"
   },
@@ -364,36 +342,6 @@
     "_crHasCrossSiteAncestor": false
   },
   {
-    "name": "_yasc",
-    "value": "pSj2P0+Ybhronhp9YGLU/2bBmNX8gZGJSTgA316iqLdUF15E8b+ZJoKUgMpnwalCMXyt",
-    "domain": ".yandex.com",
-    "path": "/",
-    "expires": 1818578892.734025,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
-    "name": "_ga_65E9RZ06ED",
-    "value": "GS2.1.s1784018716$o1$g1$t1784018979$j45$l0$h0",
-    "domain": ".aviso.bz",
-    "path": "/",
-    "expires": 1818578979.898717,
-    "httpOnly": false,
-    "secure": false,
-    "sameSite": "Lax"
-  },
-  {
-    "name": "bh",
-    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIaA3g4NiIOMTM4LjAuNzIwNC4xMDAqAj8wOgkiV2luZG93cyJCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYKPw19IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
-    "domain": ".yandex.com",
-    "path": "/",
-    "expires": 1818578979,
-    "httpOnly": false,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
     "name": "PHPSESSID",
     "value": "qsjlnlm17n87ch1u6ovdcolgt7",
     "domain": "7132.s7-expresswallet.pro",
@@ -486,16 +434,6 @@
     "_crHasCrossSiteAncestor": true
   },
   {
-    "name": "VID",
-    "value": "0XaaOw1mNUof00003c3DnSof:::0-0-0-f705254-0-f705254:CAASEPf9vVrM2YUt5-K8flGX4_QaYGPuhiRYkp9clOxdCZFtdCkXWmndK0YEE3s6TMHIK86_ChI9VWrMhH6MdlwtO2_voCZ7OzW0AS0gRmSI2zLICjaxQr2cuE-tqnNce_Vnh1epJ7t31kUwddnfTiLWJw6D0A",
-    "domain": ".mail.ru",
-    "path": "/",
-    "expires": 1815641748.620429,
-    "httpOnly": true,
-    "secure": true,
-    "sameSite": "None"
-  },
-  {
     "name": "PHPSESSID",
     "value": "6e39a68efa86fd4b8592bbd8b2e39c83",
     "domain": "mylinkslot.ru",
@@ -506,11 +444,291 @@
     "sameSite": "Lax"
   },
   {
-    "name": "__session:0.03512210042827091:",
-    "value": "https:",
-    "domain": "mylinkslot.ru",
+    "name": "bh",
+    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIqAj8wOgkiV2luZG93cyJgy/TX0gZqF9zK4f8IktihsQOfz+HqA/v67OgG84EC",
+    "domain": ".yandex.ru",
     "path": "/",
-    "expires": 1784019542,
+    "expires": 1818579531,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "cf_clearance",
+    "value": "cadtcGWkczkz85TtlELB0eqeMqUvtpaV94wM3Lt8NdU-1784019532-1.2.1.1-uFAXs_yYeIVlM1n.isyOktVUYTOLVFB.0NKwQO40xhMYFx.j0GUVWt1WhLQ_wfGmP0vI6uaQCO4luRY54.bosEQ8nhv0kBsoeWeftTq94TG_f9StlxSdOrjbt_V.E79HH5Viw7gmxNXydb.sVHfYfsc64ISduMIVjdTgFayXNjTaX4vLqM5rsk_trz1W3SmX0KQV0G55ykqCK5UfUQ5ZTGgYSs3Tu1GvVnb9FBuAOJJLpAAu6aLoT5FOR0ifWuFrOCq.8hvn9CrnB1KvmewuylDn4HT7rp7_rOr60_XHKefBNRrCNtk6eI.iCKj4QT9qJfZ04LZEkEnTokQqiObK.g",
+    "domain": ".aviso.bz",
+    "path": "/",
+    "expires": 1815555532.546997,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://aviso.bz",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "_ga_65E9RZ06ED",
+    "value": "GS2.1.s1784018716$o1$g1$t1784019543$j49$l0$h0",
+    "domain": ".aviso.bz",
+    "path": "/",
+    "expires": 1818579543.978855,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "is_gdpr",
+    "value": "0",
+    "domain": ".yandex.ru",
+    "path": "/",
+    "expires": 1818579609.664689,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "is_gdpr_b",
+    "value": "CIrFZBCckAM=",
+    "domain": ".yandex.ru",
+    "path": "/",
+    "expires": 1818579609.664736,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_yasc",
+    "value": "uIh2URTqgP7hnSNsWT22LCfWeWM9T0fu6BLDbTPhXPm+owF1PJX/QlRxBV9D1X/Y",
+    "domain": ".yandex.ru",
+    "path": "/",
+    "expires": 1818579609.664747,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "pi",
+    "value": "+mCOpA9OG6dqyqZncu0fUrZRNkbL7MvauhlbYbt/szyFO/Noj0KUDxQGLUPYWPY+J7Jv89sazuiffCsg55Y7u6xjf+8=",
+    "domain": ".yandex.ru",
+    "path": "/",
+    "expires": 1818579609.664757,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://shadowmaster777.ru",
+    "_crHasCrossSiteAncestor": true
+  },
+  {
+    "name": "yashr",
+    "value": "8671040761784019609",
+    "domain": ".yandex.ru",
+    "path": "/",
+    "expires": 1815555609,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://shadowmaster777.ru",
+    "_crHasCrossSiteAncestor": true
+  },
+  {
+    "name": "tmr_lvid",
+    "value": "45035f45f0b9c321615cf9e980adf80a",
+    "domain": ".shadowmaster777.ru",
+    "path": "/",
+    "expires": 1812790809,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "tmr_lvidTS",
+    "value": "1784019609775",
+    "domain": ".shadowmaster777.ru",
+    "path": "/",
+    "expires": 1812790809,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "bh",
+    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIqAj8wOgkiV2luZG93cyJgmfXX0gZqF9zK4f8IktihsQOfz+HqA/v67OgG84EC",
+    "domain": ".webvisor.org",
+    "path": "/",
+    "expires": 1818579609.943268,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "bh",
+    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIqAj8wOgkiV2luZG93cyJgmfXX0gZqF9zK4f8IktihsQOfz+HqA/v67OgG84EC",
+    "domain": ".metrika-informer.com",
+    "path": "/",
+    "expires": 1818579609,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ym_uid",
+    "value": "1784019610883161666",
+    "domain": ".shadowmaster777.ru",
+    "path": "/",
+    "expires": 1815555610,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ym_d",
+    "value": "1784019610",
+    "domain": ".shadowmaster777.ru",
+    "path": "/",
+    "expires": 1815555610,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "sync_cookie_csrf",
+    "value": "194063309fake",
+    "domain": ".mc.webvisor.org",
+    "path": "/",
+    "expires": 1784020210,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_yasc",
+    "value": "Xd48M09ttLFerIhy/iV9Sihn6md1m7oBevjvJ8i4JPklLZMsnm8BtLv1fk9mja2oIzrM",
+    "domain": ".yandex.com",
+    "path": "/",
+    "expires": 1818579610.659225,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ym_isad",
+    "value": "2",
+    "domain": ".shadowmaster777.ru",
+    "path": "/",
+    "expires": 1784091610,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "sync_cookie_csrf",
+    "value": "365222258fake",
+    "domain": ".mc.yandex.ru",
+    "path": "/",
+    "expires": 1784020210,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "yandexuid",
+    "value": "4040382871784018718",
+    "domain": ".webvisor.org",
+    "path": "/",
+    "expires": 1818579610.902002,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "yuidss",
+    "value": "4040382871784018718",
+    "domain": ".webvisor.org",
+    "path": "/",
+    "expires": 1818579610.902086,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "i",
+    "value": "EPxe2WhRqTFAsY0sPtxfLSMoJHHDHf1mGgSgW5Q6ixX8zoZKoVjv2Mh7txfa3JJ5oAQ0zfPmLXihic0sS9qNQByUrT4=",
+    "domain": ".webvisor.org",
+    "path": "/",
+    "expires": 1818579610.902102,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "sync_cookie_ok",
+    "value": "synced",
+    "domain": ".mc.webvisor.org",
+    "path": "/",
+    "expires": 1784106010,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "receive-cookie-deprecation",
+    "value": "1",
+    "domain": ".yandex.com",
+    "path": "/",
+    "expires": 1815555610,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://shadowmaster777.ru",
+    "_crHasCrossSiteAncestor": true
+  },
+  {
+    "name": "bh",
+    "value": "EiYiTm90KUE7QnJhbmQiO3Y9IjgiLCJDaHJvbWl1bSI7dj0iMTM4IhoDeDg2Ig4xMzguMC43MjA0LjEwMCoCPzA6B1dpbmRvd3NCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYJr119IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
+    "domain": ".yandex.com",
+    "path": "/",
+    "expires": 1818579610,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "domain_sid",
+    "value": "Pq611UlZLKYo2LO7P_CZt%3A1784019611374",
+    "domain": "shadowmaster777.ru",
+    "path": "/",
+    "expires": 1784624411.374916,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "PVID",
+    "value": "0XaaOw1mNUof00003c3DnSof:::0-0-0-f705254-0-f70535b:CAASEKzhDMl3hWlntqPMUz1m-DYaYKqkcVH7Ztrs4y85PQiKhiDMvp76RfXuDeTsQEojAwfwa-g2qLHAaCP_gOUaaH3_x7CX2nzqPIqVv94QbPf8Q51Vh1doD8u0Xsx1dAFksWlqY8O5vAQJxAyjdxTqiDMmCg",
+    "domain": "top-fwz1.mail.ru",
+    "path": "/",
+    "expires": 1815642011.498001,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://shadowmaster777.ru",
+    "_crHasCrossSiteAncestor": true
+  },
+  {
+    "name": "VID",
+    "value": "0XaaOw1mNUof00003c3DnSof:::0-0-0-f705254-0-f70535b:CAASEKzhDMl3hWlntqPMUz1m-DYaYKqkcVH7Ztrs4y85PQiKhiDMvp76RfXuDeTsQEojAwfwa-g2qLHAaCP_gOUaaH3_x7CX2nzqPIqVv94QbPf8Q51Vh1doD8u0Xsx1dAFksWlqY8O5vAQJxAyjdxTqiDMmCg",
+    "domain": ".mail.ru",
+    "path": "/",
+    "expires": 1815642011.498372,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "tmr_detect",
+    "value": "0%7C1784019612188",
+    "domain": "shadowmaster777.ru",
+    "path": "/",
+    "expires": 1784106012,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
