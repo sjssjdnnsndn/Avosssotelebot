@@ -12916,3 +12916,27 @@
 [15/7/2026, 8:12:47 am] [VPN] ✅ Injected: about:blank
 [15/7/2026, 8:13:49 am] [surf 149312] ✅ PAID +0.076 руб | Total: 0.076 (1) | Balance: 6.66 руб. Основной счет
 [15/7/2026, 8:13:49 am] ⏳ Human delay 45s
+[15/7/2026, 8:14:34 am] [surf 155605] 💰0.076 руб | ⏱60s | https://targetclub.ru/tar/index.php
+[15/7/2026, 8:14:35 am] [surf 155605] go-serf: ✅
+[15/7/2026, 8:14:35 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:15:37 am] [surf 155605] ✅ PAID +0.076 руб | Total: 0.152 (2) | Balance: 6.66 руб. Основной счет
+[15/7/2026, 8:15:37 am] ⏳ Human delay 89s
+[15/7/2026, 8:17:07 am] [surf 155604] 💰0.076 руб | ⏱60s | https://rebenokigraet.ru/ilk/index.php
+[15/7/2026, 8:17:07 am] [surf 155604] go-serf: ✅
+[15/7/2026, 8:17:07 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:18:09 am] [surf 155604] ✅ PAID +0.076 руб | Total: 0.228 (3) | Balance: 6.66 руб. Основной счет
+[15/7/2026, 8:18:11 am] [surf 155663] 💰0.07 руб | ⏱55s | https://seotime.biz/?r=admin
+[15/7/2026, 8:18:12 am] [surf 155663] go-serf: ✅
+[15/7/2026, 8:18:12 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:19:09 am] [surf 155663] ❌ Not confirmed: Заявка не найдена
+[15/7/2026, 8:19:09 am] ⏳ Human delay 63s
+[15/7/2026, 8:20:12 am] [surf 140558] 💰0.031 руб | ⏱10s | https://clck.biz/fast-trading/?partner_id=p24
+[15/7/2026, 8:20:12 am] [surf 140558] go-serf: ✅
+[15/7/2026, 8:20:13 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:20:25 am] [surf 140558] ✅ PAID +0.031 руб | Total: 0.259 (4) | Balance: 6.66 руб. Основной счет
+[15/7/2026, 8:20:25 am] ⏳ Human delay 73s
+[15/7/2026, 8:21:38 am] [surf 151725] 💰0.031 руб | ⏱10s | https://planetofbets.app/?ref_id=1304831
+[15/7/2026, 8:21:38 am] [surf 151725] go-serf: ✅
+[15/7/2026, 8:21:38 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:21:51 am] [surf 151725] ✅ PAID +0.031 руб | Total: 0.29 (5) | Balance: 6.66 руб. Основной счет
+[15/7/2026, 8:21:51 am] ⏳ Human delay 78s
