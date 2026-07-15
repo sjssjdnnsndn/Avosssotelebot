@@ -1,21 +1,18 @@
 {
   "status": "working",
-  "currentTask": {
-    "type": "surf",
-    "id": "149312",
-    "price": 0.076,
-    "timer": 60
-  },
+  "currentTask": null,
   "balance": "6.66 руб. Основной счет",
   "balanceRaw": 6.66,
-  "totalEarned": 0,
-  "totalTasks": 0,
+  "totalEarned": 0.076,
+  "totalTasks": 1,
   "totalYtDone": 1,
   "totalYtEarned": 0,
   "sessionStart": 1784083316681,
   "sleepUntil": null,
-  "lastUpdated": "2026-07-15T02:42:47.416Z",
+  "lastUpdated": "2026-07-15T02:43:49.897Z",
   "log": [
+    "[15/7/2026, 8:13:49 am] ⏳ Human delay 45s",
+    "[15/7/2026, 8:13:49 am] [surf 149312] ✅ PAID +0.076 руб | Total: 0.076 (1) | Balance: 6.66 руб. Основной счет",
     "[15/7/2026, 8:12:47 am] [VPN] ✅ Injected: about:blank",
     "[15/7/2026, 8:12:47 am] [surf 149312] go-serf: ✅",
     "[15/7/2026, 8:12:47 am] [surf 149312] 💰0.076 руб | ⏱60s | https://500money500.com/",

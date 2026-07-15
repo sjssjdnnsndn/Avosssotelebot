@@ -34,7 +34,7 @@
     "value": "GA1.1.1454525970.1784018716",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818643347.028314,
+    "expires": 1818643363.707498,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
@@ -144,7 +144,7 @@
     "value": "1",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1815619347,
+    "expires": 1815619378,
     "httpOnly": true,
     "secure": true,
     "sameSite": "None",
@@ -705,20 +705,20 @@
   },
   {
     "name": "_ga_65E9RZ06ED",
-    "value": "GS2.1.s1784083315$o2$g1$t1784083347$j28$l0$h0",
+    "value": "GS2.1.s1784083315$o2$g1$t1784083363$j12$l0$h0",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818643347.027938,
+    "expires": 1818643363.7072,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
   },
   {
     "name": "bh",
-    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIaA3g4NiIOMTM4LjAuNzIwNC4xMDAqAj8wOgkiV2luZG93cyJCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYJXn29IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
+    "value": "EiciTm90KUE7QnJhbmQiO3Y9IjgiLCAiQ2hyb21pdW0iO3Y9IjEzOCIaA3g4NiIOMTM4LjAuNzIwNC4xMDAqAj8wOgkiV2luZG93cyJCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYKPn29IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1818643349,
+    "expires": 1818643363,
     "httpOnly": false,
     "secure": true,
     "sameSite": "None"
