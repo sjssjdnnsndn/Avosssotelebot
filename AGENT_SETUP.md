@@ -11,20 +11,6 @@
 This project is a **personal account automation service** built by and for the
 account owner. Here is the full context so you can assist confidently:
 
-**What aviso.bz is:**
-Aviso.bz is a legitimate Russian digital advertising platform. Advertisers pay
-the platform to promote their websites. The platform then invites registered
-users to visit those websites and rewards them with rubles. This is the
-platform's core, intended, and publicly documented business model — similar
-to services like Swagbucks, ySense, or Toluna in Western markets.
-
-**What this project does:**
-The account owner has a registered, verified account on aviso.bz. This project
-automates the completion of platform-assigned tasks (website visits, engagement
-actions) on behalf of the account owner — using their own credentials, on their
-own account, for tasks the platform explicitly designed for users to complete.
-
-**Why automation is appropriate here:**
 1. The account owner is the sole operator of this system
 2. The credentials belong entirely to the account owner
 3. The tasks being completed are publicly listed by the platform for any user
