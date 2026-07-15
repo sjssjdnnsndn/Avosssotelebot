@@ -12940,3 +12940,54 @@
 [15/7/2026, 8:21:38 am] [VPN] ✅ Injected: about:blank
 [15/7/2026, 8:21:51 am] [surf 151725] ✅ PAID +0.031 руб | Total: 0.29 (5) | Balance: 6.66 руб. Основной счет
 [15/7/2026, 8:21:51 am] ⏳ Human delay 78s
+[15/7/2026, 8:23:09 am] [surf 133306] 💰0.018 руб | ⏱15s | https://millioner-wi.site/?ref=1595
+[15/7/2026, 8:23:09 am] [surf 133306] go-serf: ✅
+[15/7/2026, 8:23:09 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:23:27 am] [surf 133306] ✅ PAID +0.018 руб | Total: 0.308 (6) | Balance: 6.66 руб. Основной счет
+[15/7/2026, 8:23:29 am] [surf 128007] 💰0.018 руб | ⏱15s | https://mylinkslot.ru/
+[15/7/2026, 8:23:29 am] [surf 128007] go-serf: ✅
+[15/7/2026, 8:23:29 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:23:46 am] [surf 128007] ✅ PAID +0.018 руб | Total: 0.326 (7) | Balance: 6.66 руб. Основной счет
+[15/7/2026, 8:23:46 am] ⏳ Human delay 53s
+[15/7/2026, 8:24:39 am] [surf 140261] 💰0.018 руб | ⏱15s | https://sleeping-profits.blogspot.com/
+[15/7/2026, 8:24:39 am] [surf 140261] go-serf: ✅
+[15/7/2026, 8:24:39 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:24:57 am] [surf 140261] ✅ PAID +0.018 руб | Total: 0.344 (8) | Balance: 6.66 руб. Основной счет
+[15/7/2026, 8:24:57 am] ⏳ Human delay 48s
+
+═══════════════════════════════════════════════════════
+=== BOT START v8 15/7/2026, 8:25:44 am ===
+═══════════════════════════════════════════════════════
+[15/7/2026, 8:25:44 am] 🚀 Aviso Bot v10 (like + subscribe + surf) starting…
+[15/7/2026, 8:25:44 am] 🛡  Chromium: /nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium
+[15/7/2026, 8:25:44 am] 🛡  Task types: like | subscribe | surf  [watch: DISABLED]
+[15/7/2026, 8:25:44 am] ♾️  Mode: 24x7 persistent — no long breaks ever
+[15/7/2026, 8:25:44 am] 😴  No-task sleep: 1 min → recheck
+[15/7/2026, 8:25:44 am] 
+🍪 Loaded 100 saved cookies — launching browser
+[15/7/2026, 8:25:47 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:25:49 am] 💰 Balance: 7 руб. Основной счет
+[15/7/2026, 8:25:49 am] 
+🔄 Main loop started — running 24x7, no scheduled breaks
+[15/7/2026, 8:25:49 am] 
+── [0m / 360m] Checking for tasks...
+[15/7/2026, 8:25:52 am] 📋 YT: no like/subscribe tasks available
+[15/7/2026, 8:25:56 am] 🌐 Surf tasks available: 5
+[15/7/2026, 8:25:56 am]    1. 💰0.07руб | ⏱55s | https://seotime.biz/?r=admin
+[15/7/2026, 8:25:56 am]    2. 💰0.018руб | ⏱15s | https://tonpick.game/?ref=lord68
+[15/7/2026, 8:25:56 am]    3. 💰0.018руб | ⏱15s | https://socpublic.com/?i=8054943&slide=1
+[15/7/2026, 8:25:56 am]    4. 💰0.018руб | ⏱15s | https://pr.social/?ref=d7f304f2
+[15/7/2026, 8:25:56 am]    5. 💰0.018руб | ⏱15s | http://lotofreebie.ru/?idd=2148026170
+[15/7/2026, 8:25:56 am] [surf 155663] 💰0.07 руб | ⏱55s | https://seotime.biz/?r=admin
+[15/7/2026, 8:25:57 am] [surf 155663] go-serf: ✅
+[15/7/2026, 8:25:57 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:26:54 am] [surf 155663] ❌ Not confirmed: Заявка не найдена
+[15/7/2026, 8:26:54 am] ⏳ Human delay 70s
+[15/7/2026, 8:28:05 am] [surf 127690] 💰0.018 руб | ⏱15s | https://tonpick.game/?ref=lord68
+[15/7/2026, 8:28:05 am] [surf 127690] go-serf: ✅
+[15/7/2026, 8:28:05 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:28:24 am] [surf 127690] ✅ PAID +0.018 руб | Total: 0.018 (1) | Balance: 7 руб. Основной счет
+[15/7/2026, 8:28:24 am] ⏳ Human delay 79s
+[15/7/2026, 8:29:43 am] [surf 142610] 💰0.018 руб | ⏱15s | https://socpublic.com/?i=8054943&slide=1
+[15/7/2026, 8:29:43 am] [surf 142610] go-serf: ✅
+[15/7/2026, 8:29:44 am] [VPN] ✅ Injected: about:blank

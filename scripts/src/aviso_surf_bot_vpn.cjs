@@ -751,6 +751,9 @@ async function runOneSurfTask(page, context, task, tabId, cookieHeader) {
     if (confirmRes.success) {
       state.totalTasks++;
       state.totalEarned = Math.round((state.totalEarned + earned) * 1000) / 1000;
+      // Reload tasks page so DOM reflects server-credited balance
+      await page.goto('https://aviso.bz/tasks-surf', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(1200);
       const freshBal = await getBalance(page);
       state.balance  = freshBal;
       state.balanceRaw = parseFloat(freshBal) || state.balanceRaw;
