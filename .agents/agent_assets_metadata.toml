@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "Or2fwrzyB6O4MszTi-5tD"
+uri = "file://AGENT_SETUP.md"
+type = "text"
+title = "AGENT_SETUP.md — Replit AI Agent Setup Instructions"

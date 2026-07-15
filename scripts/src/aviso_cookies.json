@@ -34,7 +34,7 @@
     "value": "GA1.1.1454525970.1784018716",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818644303.499506,
+    "expires": 1818644683.900369,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
@@ -144,7 +144,7 @@
     "value": "1",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1815620303,
+    "expires": 1815620683,
     "httpOnly": true,
     "secure": true,
     "sameSite": "None",
@@ -986,21 +986,113 @@
     "sameSite": "None"
   },
   {
+    "name": "parent_id",
+    "value": "8054943",
+    "domain": ".socpublic.com",
+    "path": "/",
+    "expires": 1786676384.49981,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "session_id",
+    "value": "143AE965-7FD2-6194-D30E-3DE8E1CE6EE1",
+    "domain": ".socpublic.com",
+    "path": "/",
+    "expires": 1786676384.499928,
+    "httpOnly": true,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "secret",
+    "value": "85E2BD7F-508B-6472-E9E8-81CDAE782831",
+    "domain": ".socpublic.com",
+    "path": "/",
+    "expires": 1786676384.49994,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "user_data",
+    "value": "a%3A0%3A%7B%7D",
+    "domain": ".socpublic.com",
+    "path": "/",
+    "expires": 1799636384.643067,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ym_uid",
+    "value": "1784084386873028766",
+    "domain": ".socpublic.com",
+    "path": "/",
+    "expires": 1815620386,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ym_d",
+    "value": "1784084386",
+    "domain": ".socpublic.com",
+    "path": "/",
+    "expires": 1815620386,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ym_isad",
+    "value": "2",
+    "domain": ".socpublic.com",
+    "path": "/",
+    "expires": 1784156386,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "receive-cookie-deprecation",
+    "value": "1",
+    "domain": ".yandex.com",
+    "path": "/",
+    "expires": 1815620386,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://socpublic.com",
+    "_crHasCrossSiteAncestor": true
+  },
+  {
+    "name": "idcokD",
+    "value": "2148026170",
+    "domain": "lotofreebie.top",
+    "path": "/",
+    "expires": 1784516491,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
     "name": "_ga_65E9RZ06ED",
-    "value": "GS2.1.s1784083315$o2$g1$t1784084303$j60$l0$h0",
+    "value": "GS2.1.s1784083315$o2$g1$t1784084683$j27$l0$h0",
     "domain": ".aviso.bz",
     "path": "/",
-    "expires": 1818644303.499243,
+    "expires": 1818644683.90006,
     "httpOnly": false,
     "secure": false,
     "sameSite": "Lax"
   },
   {
     "name": "bh",
-    "value": "EiYiTm90KUE7QnJhbmQiO3Y9IjgiLCJDaHJvbWl1bSI7dj0iMTM4IhoDeDg2Ig4xMzguMC43MjA0LjEwMCoCPzA6B1dpbmRvd3NCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYM/u29IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
+    "value": "EiYiTm90KUE7QnJhbmQiO3Y9IjgiLCJDaHJvbWl1bSI7dj0iMTM4IhoDeDg2Ig4xMzguMC43MjA0LjEwMCoCPzA6B1dpbmRvd3NCBDEwLjBKAjY0UjciTm90KUE7QnJhbmQiO3Y9IjguMC4wLjAiLCJDaHJvbWl1bSI7dj0iMTM4LjAuNzIwNC4xMDAiYMvx29IGahfcyuH/CJLYobEDn8/h6gP7+uzoBvOBAg==",
     "domain": ".yandex.com",
     "path": "/",
-    "expires": 1818644303,
+    "expires": 1818644683,
     "httpOnly": false,
     "secure": true,
     "sameSite": "None"

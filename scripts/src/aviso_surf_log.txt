@@ -12991,3 +12991,63 @@
 [15/7/2026, 8:29:43 am] [surf 142610] 💰0.018 руб | ⏱15s | https://socpublic.com/?i=8054943&slide=1
 [15/7/2026, 8:29:43 am] [surf 142610] go-serf: ✅
 [15/7/2026, 8:29:44 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:30:02 am] [surf 142610] ✅ PAID +0.018 руб | Total: 0.036 (2) | Balance: 7.02 руб. Основной счет
+[15/7/2026, 8:30:04 am] [surf 132681] 💰0.018 руб | ⏱15s | https://pr.social/?ref=d7f304f2
+[15/7/2026, 8:30:05 am] [surf 132681] go-serf: ✅
+[15/7/2026, 8:30:05 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:30:24 am] [surf 132681] ✅ PAID +0.018 руб | Total: 0.054 (3) | Balance: 7.05 руб. Основной счет
+[15/7/2026, 8:30:24 am] ⏳ Human delay 65s
+[15/7/2026, 8:31:29 am] [surf 129956] 💰0.018 руб | ⏱15s | http://lotofreebie.ru/?idd=2148026170
+[15/7/2026, 8:31:29 am] [surf 129956] go-serf: ✅
+[15/7/2026, 8:31:29 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:31:48 am] [surf 129956] ✅ PAID +0.018 руб | Total: 0.072 (4) | Balance: 7.05 руб. Основной счет
+[15/7/2026, 8:31:48 am] 
+── [0m / 360m] Checking for tasks...
+[15/7/2026, 8:31:51 am] 📋 YT: no like/subscribe tasks available
+[15/7/2026, 8:31:55 am] 🌐 Surf: no tasks available
+[15/7/2026, 8:31:55 am] 
+😴 No tasks found — waiting 1min then rechecking...
+[15/7/2026, 8:32:45 am] 🔍 Break over — rechecking tasks...
+[15/7/2026, 8:32:45 am] 
+── [0m / 360m] Checking for tasks...
+[15/7/2026, 8:32:48 am] 📋 YT: no like/subscribe tasks available
+[15/7/2026, 8:32:52 am] 🌐 Surf: no tasks available
+[15/7/2026, 8:32:52 am] 
+😴 No tasks found — waiting 1min then rechecking...
+[15/7/2026, 8:33:40 am] 🔍 Break over — rechecking tasks...
+[15/7/2026, 8:33:40 am] 
+── [0m / 360m] Checking for tasks...
+[15/7/2026, 8:33:43 am] 📋 YT tasks available: like=1 subscribe=0 watch=0
+[15/7/2026, 8:33:43 am] ▶ Running [like] id=442991 price=0.042
+[15/7/2026, 8:33:43 am] [like 442991] Starting | YouTube: https://www.youtube.com/watch?v=QGOmJ4qaf-E
+[15/7/2026, 8:33:58 am] [like 442991] No popup event — opening like page directly
+[15/7/2026, 8:33:59 am] [VPN] ✅ Injected: about:blank
+[15/7/2026, 8:33:59 am] [like 442991] Like page: https://aviso.bz/go/youtube-start-like.php?task_id=442991
+[15/7/2026, 8:34:01 am] [like 442991] Clicking Like button...
+[15/7/2026, 8:34:08 am] [like 442991] Like page closed — checking for confirm
+[15/7/2026, 8:34:13 am] [like 442991] Waiting for confirm... 3s
+[15/7/2026, 8:34:21 am] [like 442991] Waiting for confirm... 12s
+[15/7/2026, 8:34:30 am] [like 442991] Waiting for confirm... 20s
+[15/7/2026, 8:34:38 am] [like 442991] Waiting for confirm... 28s
+[15/7/2026, 8:34:46 am] [like 442991] Waiting for confirm... 36s
+[15/7/2026, 8:34:51 am] [like 442991] ❌ Confirm button never appeared
+[15/7/2026, 8:34:54 am] 
+── [0m / 360m] Checking for tasks...
+[15/7/2026, 8:34:58 am] 📋 YT: no like/subscribe tasks available
+[15/7/2026, 8:35:01 am] 🌐 Surf: no tasks available
+[15/7/2026, 8:35:01 am] 
+😴 No tasks found — waiting 1min then rechecking...
+[15/7/2026, 8:35:51 am] 🔍 Break over — rechecking tasks...
+[15/7/2026, 8:35:51 am] 
+── [0m / 360m] Checking for tasks...
+[15/7/2026, 8:35:55 am] 📋 YT: no like/subscribe tasks available
+[15/7/2026, 8:35:59 am] 🌐 Surf: no tasks available
+[15/7/2026, 8:35:59 am] 
+😴 No tasks found — waiting 1min then rechecking...
+[15/7/2026, 8:36:40 am] 🔍 Break over — rechecking tasks...
+[15/7/2026, 8:36:40 am] 
+── [0m / 360m] Checking for tasks...
+[15/7/2026, 8:36:43 am] 📋 YT: no like/subscribe tasks available
+[15/7/2026, 8:36:47 am] 🌐 Surf: no tasks available
+[15/7/2026, 8:36:47 am] 
+😴 No tasks found — waiting 1min then rechecking...
